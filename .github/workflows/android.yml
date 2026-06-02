@@ -39,15 +39,18 @@ jobs:
           export ANDROID_HOME=$HOME/android-sdk
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
           
-          yes | sdkmanager --licenses > /dev/null
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null
 
-          $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;37.0.0"
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;37.0.0"
 
           echo "ANDROIDSDK=$HOME/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$HOME/android-sdk/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
 
       - name: Build APK
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          PATH: ${{ env.PATH }}
         run: |
           buildozer android debug
 
