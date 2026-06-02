@@ -1,5 +1,4 @@
 [app]
-# (str) Uygulama Başlığı
 title = Gasket Matcher
 package.name = gasketmatcher
 package.domain = org.aroskay
@@ -7,27 +6,29 @@ source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,atlas
 version = 1.0
 
-# (list) Uygulama Bağımlılıkları
-# DÜZELTME: opencv buradan kaldırıldı, çalışma zamanında dinamik yüklenecek.
+# Bağımlılıklar (OpenCV dışarıda kalmaya devam ediyor, en güvenlisi bu)
 requirements = python3, kivy, numpy, pyjnius, android
 
 orientation = portrait
 fullscreen = 0
 
-# (list) Android İzinleri
 android.permissions = CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
 
-# (int) Android API Ayarları
+# =============================================================================
+# 🚀 MODERN GRADLE VE SUNUCU UYUMLULUK AYARLARI
+# =============================================================================
 android.api = 33
 android.minapi = 24
-android.ndk = 25b
+
+# Sürümü boş bırakıyoruz ki GitHub sunucusundaki güncel NDK'yı otomatik kullansın
+android.ndk = 
 android.ndk_api = 24
 android.ndk_stl = c++_shared
 
-# (list) Desteklenen İşlemci Mimarileri
+# İşlemci Mimarileri
 android.archs = arm64-v8a, armeabi-v7a
 
-# (list) Gradle Bağımlılıkları
+# Java ve SAF klasör seçici bağımlılığı
 android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1
 android.allow_backup = True
 
