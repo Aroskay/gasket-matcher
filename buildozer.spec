@@ -28,6 +28,8 @@ android.private_storage = True
 
 android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1
 
+android.enable_androidx = True
+
 android.archs = arm64-v8a
 
 android.logcat_filters = *:S python:D
