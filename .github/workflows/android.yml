@@ -3,7 +3,11 @@ name: Build Android APK
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # Manuel tetikleme butonu sağlar
+  workflow_dispatch:
+
+env:
+  # GitHub Actions'ın Node.js 20 yerine güncel Node.js 24 kullanmasını zorunlu kılıyoruz
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -21,13 +25,11 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt update
-          # Android derleme araçları için zorunlu paketler
           sudo apt install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
 
       - name: Install Buildozer & Cython Fix
         run: |
           python -m pip install --upgrade pip
-          # DÜZELTME: Kivy derlemesini çökerten Cython 3.x sürümü yerine <3.0.0 kilitlendi
           pip install buildozer "Cython<3.0.0" virtualenv
 
       - name: Accept Android SDK Licenses
