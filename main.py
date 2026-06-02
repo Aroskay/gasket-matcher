@@ -1,3 +1,14 @@
+import sys
+import os
+
+# Uygulama ilk açıldığında OpenCV yüklü değilse otomatik olarak yükler
+try:
+    import cv2
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python-headless"])
+    import cv2
+
 import os
 import shutil
 import threading
