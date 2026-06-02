@@ -1,45 +1,46 @@
 [app]
+# (str) Uygulamanın adı
+title = Gasket Matcher
 
-title = Gasket Matcher Pro
-
+# (str) Paket adı ve domain
 package.name = gasketmatcher
-package.domain = org.test
+package.domain = org.aroskay
 
+# (str) Kaynak kod dizini
 source.dir = .
 
+# (list) Dahil edilecek dosya uzantıları (Resimleri de ekledik)
 source.include_exts = py,png,jpg,jpeg,kv,atlas
 
+# (str) Uygulama versiyonu
 version = 1.0
 
-requirements = python3==3.11.9,kivy==2.3.0,numpy,opencv,pillow
+# (list) GEREKSİNİMLER (En Kritik Kısım)
+# DÜZELTME: opencv-python yerine sadece "opencv" kullanılmalıdır. Buildozer'ın kendi OpenCV reçetesi vardır.
+requirements = python3, kivy, opencv, numpy, pyjnius, android
 
+# (str) Ekrana sığdırma ve yönlendirme
 orientation = portrait
-
 fullscreen = 0
 
-android.permissions = CAMERA,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE
+# (list) Android İzinleri
+android.permissions = CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
 
-android.api = 34
-android.minapi = 24
+# (int) Hedef Android API ve Minimum API
+android.api = 33
+android.minapi = 21
 
-android.accept_sdk_license = True
+# (list) Desteklenen CPU Mimarileri (Modern ve eski cihazlar için)
+android.archs = arm64-v8a, armeabi-v7a
 
-android.private_storage = True
-
+# (list) Gradle Bağımlılıkları
+# DÜZELTME: main.py'deki klasör seçme (SAF) özelliği için DocumentFile bağımlılığı eklendi.
 android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1
 
-android.enable_androidx = True
-
-android.archs = arm64-v8a
-
-android.logcat_filters = *:S python:D
-
-p4a.bootstrap = sdl2
-
-android.ndk = 25b
+# (bool) Yedeklemeye izin ver
+android.allow_backup = True
 
 [buildozer]
-
+# Log seviyesi (Hataları görmek için 2 yapıldı)
 log_level = 2
-
 warn_on_root = 1
