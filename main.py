@@ -17,7 +17,7 @@ from kivy.utils import platform
 # Android yerel mimari entegrasyonu (Güncel ve Güvenli Bağlantı)
 if platform == 'android':
     from android.permissions import request_permissions, Permission
-    from jnius import autoclass, cast, jimport
+    from jnius import autoclass, cast
     
     # Gerekli Android Java Sınıfları
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
