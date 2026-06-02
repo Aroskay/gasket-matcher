@@ -20,7 +20,7 @@ source.include_exts = py,png,jpg,jpeg,kv,atlas
 
 # (list) Application requirements
 # Python 3.11 ve OpenCV 4.9.0.80 sürümüne sabitlenerek Python 3.14 derleme hatası kökten çözüldü.
-requirements = python3==3.11.9,kivy==2.3.0,numpy,opencv-python-headless==4.9.0.80
+requirements = python3==3.11.9,kivy==2.3.0,numpy,opencv,pillow
 
 # (str) Supported orientations (one of landscape, sensorLandscape, portrait or all)
 orientation = portrait
