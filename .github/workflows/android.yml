@@ -36,7 +36,10 @@ jobs:
           mkdir latest
           mv cmdline-tools/* latest/ || true
 
-          yes yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+          export ANDROID_HOME=$HOME/android-sdk
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+          
+          yes | sdkmanager --licenses > /dev/null
 
           $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;37.0.0"
 
