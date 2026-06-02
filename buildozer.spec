@@ -14,12 +14,12 @@ fullscreen = 0
 
 android.permissions = CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
 
-# API Seviyeleri (NumPy için minapi en az 24 olmalı)
+# API Seviyeleri (NumPy için en az 24 olmalı)
 android.api = 33
 android.minapi = 24
 
-# 🚨 Sürümleri boş bırakıp yerlerini GitHub Actions içinde dikte edeceğiz
-android.ndk = 
+# 🚨 REGEX VE 404 HATASINI ÇÖZEN RESMİ SÜRÜM
+android.ndk = 26b
 android.ndk_api = 24
 android.ndk_stl = c++_shared
 
