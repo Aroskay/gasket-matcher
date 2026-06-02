@@ -21,7 +21,6 @@ android.permissions = CAMERA,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE
 
 android.api = 34
 android.minapi = 24
-android.sdk = 24
 
 android.accept_sdk_license = True
 
@@ -35,16 +34,10 @@ android.archs = arm64-v8a
 
 android.logcat_filters = *:S python:D
 
-# AndroidX
-android.enable_androidx = True
-
-# Build hızlandırma
 p4a.bootstrap = sdl2
 
-# OpenCV uyumluluğu
 android.ndk = 25b
 
-# Modern Android desteği
 android.allow_backup = True
 
 [buildozer]
