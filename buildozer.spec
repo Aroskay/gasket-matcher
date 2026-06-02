@@ -36,8 +36,6 @@ p4a.bootstrap = sdl2
 
 android.ndk = 25b
 
-android.allow_backup = True
-
 [buildozer]
 
 log_level = 2
