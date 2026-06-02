@@ -1,46 +1,53 @@
 [app]
-# (str) Uygulamanın adı
+# (str) Uygulama Başlığı
 title = Gasket Matcher
 
-# (str) Paket adı ve domain
+# (str) Paket adı ve domain bilgisi
 package.name = gasketmatcher
 package.domain = org.aroskay
 
-# (str) Kaynak kod dizini
+# (str) Kaynak kodların olduğu dizin
 source.dir = .
 
-# (list) Dahil edilecek dosya uzantıları (Resimleri de ekledik)
+# (list) Pakete dahil edilecek uzantılar
 source.include_exts = py,png,jpg,jpeg,kv,atlas
 
 # (str) Uygulama versiyonu
 version = 1.0
 
-# (list) GEREKSİNİMLER (En Kritik Kısım)
-# DÜZELTME: opencv-python yerine sadece "opencv" kullanılmalıdır. Buildozer'ın kendi OpenCV reçetesi vardır.
+# (list) Uygulama Bağımlılıkları
+# DÜZELTME: "opencv-python" silindi, Buildozer uyumlu "opencv" eklendi.
 requirements = python3, kivy, opencv, numpy, pyjnius, android
 
-# (str) Ekrana sığdırma ve yönlendirme
+# (str) Ekran yönü
 orientation = portrait
 fullscreen = 0
 
-# (list) Android İzinleri
+# (list) Android İzinleri (Kamera ve Depolama)
 android.permissions = CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
 
-# (int) Hedef Android API ve Minimum API
+# (int) Hedef Android API Seviyeleri
 android.api = 33
 android.minapi = 21
 
-# (list) Desteklenen CPU Mimarileri (Modern ve eski cihazlar için)
+# =============================================================================
+# 🚨 NDK ÇÖKME DÜZELTMESİ (CRITICAL FIX)
+# GitHub Actions'ın indirdiği uyumsuz r28c yerine kararlı 25b sürümünü dayatıyoruz.
+# =============================================================================
+android.ndk = 25b
+android.ndk_api = 21
+
+# (list) Desteklenen İşlemci Mimarileri
 android.archs = arm64-v8a, armeabi-v7a
 
 # (list) Gradle Bağımlılıkları
-# DÜZELTME: main.py'deki klasör seçme (SAF) özelliği için DocumentFile bağımlılığı eklendi.
+# DÜZELTME: main.py içindeki SAF klasör seçme kodunun çalışması için eklendi.
 android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1
 
-# (bool) Yedeklemeye izin ver
+# (bool) Android yedekleme izni
 android.allow_backup = True
 
 [buildozer]
-# Log seviyesi (Hataları görmek için 2 yapıldı)
+# Log seviyesi (Hataları detaylı görmek için)
 log_level = 2
 warn_on_root = 1
