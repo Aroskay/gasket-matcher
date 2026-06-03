@@ -3,9 +3,6 @@
 # AndroidX desteğini zorunlu kılın
 android.enable_androidx = True
 
-# NDK sürümünü sabitleyin (build hatalarını azaltır)
-android.ndk = 26b
-
 # (str) Uygulama Başlığı
 title = Gasket Matcher
 
