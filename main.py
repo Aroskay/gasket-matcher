@@ -1,15 +1,5 @@
 import sys
 import os
-
-# Uygulama ilk açıldığında OpenCV yüklü değilse otomatik olarak yükler
-try:
-    import cv2
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python-headless"])
-    import cv2
-
-import os
 import shutil
 import threading
 import cv2
@@ -25,7 +15,9 @@ from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.utils import platform
 
-# Android yerel mimari entegrasyonu (Güncel ve Güvenli Bağlantı)
+# =============================================================================
+# 🚨 ANDROID YEREL MİMARİ ENTEGRASYONU (Güncel ve Güvenli Bağlantı)
+# =============================================================================
 if platform == 'android':
     from android.permissions import request_permissions, Permission
     from jnius import autoclass, cast
@@ -167,7 +159,6 @@ class GasketMatcherMobile(BoxLayout):
             intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
             
             image_file = File(self.query_image_path)
-            # StrictMode kapatıldığı için fromFile artık hata vermez
             file_uri = Uri.fromFile(image_file)
             intent.putExtra(MediaStore.EXTRA_OUTPUT, cast('android.os.Parcelable', file_uri))
             
@@ -194,9 +185,7 @@ class GasketMatcherMobile(BoxLayout):
         except Exception as e:
             self.lbl_status.text = f"Klasör seçici açılamadı: {e}"
 
-    # Yeni p4a motoru için evrensel activity result yakalayıcısı
     def modern_activity_result(self, request_code, result_code, intent):
-        # Java'dan gelen ham çağrıları Python mimarisine yönlendirir
         Clock.schedule_once(lambda dt: self.direct_process_result(request_code, result_code, intent), 0)
 
     def direct_process_result(self, request_code, result_code, intent):
