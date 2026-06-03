@@ -92,6 +92,26 @@ class GasketMatcherMobile(BoxLayout):
         except Exception as e: 
             print(f"İzin isteme hatası: {e}")
 
+    def get_filename_from_uri(self, uri):
+        """Android Uri içerisinden dosyanın orijinal adını çeker"""
+        if platform == 'android':
+            try:
+                context = PythonActivity.mActivity
+                content_resolver = context.getContentResolver()
+                OpenableColumns = autoclass('android.provider.OpenableColumns')
+                cursor = content_resolver.query(uri, None, None, None, None)
+                if cursor is not None:
+                    if cursor.moveToFirst():
+                        name_index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if name_index != -1:
+                            filename = cursor.getString(name_index)
+                            cursor.close()
+                            return filename
+                    cursor.close()
+            except Exception as e:
+                print(f"Orijinal isim okuma hatası: {e}")
+        return f"gasket_{int(time.time())}.jpg"
+
     def open_camera_native(self, instance):
         if platform == 'android':
             try:
@@ -122,7 +142,6 @@ class GasketMatcherMobile(BoxLayout):
                 try:
                     self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, values)
                 except Exception as db_err:
-                    print(f"Gelişmiş insert başarısız, yalın deniniyor: {db_err}")
                     fallback_values = ContentValues()
                     fallback_values.put(Media.DISPLAY_NAME, String(filename))
                     fallback_values.put(Media.MIME_TYPE, String("image/jpeg"))
@@ -259,24 +278,26 @@ class GasketMatcherMobile(BoxLayout):
             self.update_status_from_thread("Hata: Görsel sisteme kopyalanamadı.")
 
     def process_android_uris_bulk(self, uris):
-        """DB'ye toplu ekleme esnasında ANLIK YÜZDE takibi yapar"""
+        """DB'ye eklerken dosyanın gerçek orijinal ismini korur ve çözünürlüğü PC kalitesi için 1200px yapar"""
         count = 0
         total_uris = len(uris)
         
         for i, uri in enumerate(uris):
-            # Her bir görsel işlenirken yüzdeyi anlık tetikle
             progress = ((i + 1) / total_uris) * 100
-            self.update_status_from_thread(f"Görseller DB'ye Aktarılıyor: {i + 1}/{total_uris} (%{progress:.1f})")
             
-            filename = f"gasket_{int(time.time())}_{i}.jpg"
-            temp_path = os.path.join(App.get_running_app().user_data_dir, f"temp_{filename}")
-            dest_path = os.path.join(self.db_folder, filename)
+            # Telefon galerisindeki gerçek ismi çekiyoruz
+            original_filename = self.get_filename_from_uri(uri)
+            self.update_status_from_thread(f"Aktarılıyor: {i + 1}/{total_uris} (%{progress:.1f})\nDosya: {original_filename}")
+            
+            temp_path = os.path.join(App.get_running_app().user_data_dir, f"temp_{i}_{original_filename}")
+            dest_path = os.path.join(self.db_folder, original_filename)
             
             if self.copy_uri_to_local_file(uri, temp_path):
                 try:
                     img = cv2.imread(temp_path)
                     if img is not None:
-                        max_dim = 600
+                        # Geometrik detayları kaybetmemek için çözünürlüğü 1200px'e çektik (PC kalitesi)
+                        max_dim = 1200
                         h, w = img.shape[:2]
                         if max(h, w) > max_dim:
                             scale = max_dim / max(h, w)
@@ -289,7 +310,7 @@ class GasketMatcherMobile(BoxLayout):
                     if os.path.exists(temp_path):
                         os.remove(temp_path)
                         
-        self.update_status_from_thread(f"Başarılı! {count} görsel eklendi. Toplam: {len(os.listdir(self.db_folder))}")
+        self.update_status_from_thread(f"Başarılı! {count} kayıt orijinal isimleriyle eklendi. Toplam: {len(os.listdir(self.db_folder))}")
 
     def show_clear_db_popup(self, instance):
         content = BoxLayout(orientation='vertical', padding=15, spacing=15)
@@ -321,7 +342,7 @@ class GasketMatcherMobile(BoxLayout):
             self.update_status_from_thread("[Adım 2/4] - Çözünürlük ve RAM yükü dengeleniyor...")
             img = self.load_image_with_orientation(self.query_image_path)
             if img is not None:
-                max_dim = 600
+                max_dim = 1200 # Aranan görsel kalitesini de 1200px'e çıkartarak eşleşme gücünü arttırıyoruz
                 h, w = img.shape[:2]
                 if max(h, w) > max_dim:
                     scale = max_dim / max(h, w)
@@ -371,14 +392,14 @@ class GasketMatcherMobile(BoxLayout):
             self.update_status_from_thread("Hata: Veritabanında karşılaştırılacak conta yok.")
             return
 
-        # "Geometri analiz ediliyor" deyip donuk kalmaması için bu aşamaya özel yazı basıyoruz
         self.update_status_from_thread("[Adım 4/4] - Aranan parçanın geometrik haritası çıkarılıyor...")
         query_img = self.load_image_with_orientation(self.query_image_path)
         if query_img is None:
             self.update_status_from_thread("Hata: Aranan resim yüklenemedi.")
             return
 
-        orb = cv2.ORB_create(nfeatures=1000)
+        # Nokta algılama sayısını PC hassasiyeti için 1000'den 3000'e çıkardık
+        orb = cv2.ORB_create(nfeatures=3000)
         kp_query, des_query = orb.detectAndCompute(query_img, None)
         
         if des_query is None:
@@ -389,10 +410,8 @@ class GasketMatcherMobile(BoxLayout):
         results = []
         total_files = len(db_files)
         
-        # --- ANLIK VERİTABANI DOSYA TARAMA VE YÜZDE DÖNGÜSÜ ---
         for idx, f in enumerate(db_files):
             progress = ((idx + 1) / total_files) * 100
-            # Her bir tekil dosyada başlık anında güncellenir, sayaç akar. Donma hissi sıfırlanır.
             self.update_status_from_thread(f"Kıyaslanıyor: {idx + 1}/{total_files} Parça (%{progress:.1f})\nDosya: {f}")
             
             db_path = os.path.join(self.db_folder, f)
