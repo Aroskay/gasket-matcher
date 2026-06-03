@@ -43,7 +43,7 @@ class GasketMatcherMobile(BoxLayout):
         self.query_image_path = None
         self.match_results = []
         self.current_result_index = 0
-        self.camera_uri = None # Kamera için geçici URI kaydı
+        self.camera_uri = None 
 
         # --- ANDROID AKTİVİTE VE İZİN BAĞLANTILARI ---
         if platform == 'android':
@@ -73,7 +73,6 @@ class GasketMatcherMobile(BoxLayout):
         self.lbl_status.bind(size=self.lbl_status.setter('text_size'))
         self.add_widget(self.lbl_status)
 
-        # Butonlardaki kutucuk hatasını önlemek için emojiler kaldırıldı
         btn_grid = GridLayout(cols=2, size_hint=(1, 0.25), spacing=10)
         btn_grid.add_widget(Button(text="Kameradan Tara", background_color=(0.17, 0.78, 0.52, 1), on_press=self.open_camera_native))
         btn_grid.add_widget(Button(text="Galeriden Seç", background_color=(0.12, 0.41, 0.64, 1), on_press=self.open_gallery_native))
@@ -90,33 +89,45 @@ class GasketMatcherMobile(BoxLayout):
 
     def request_android_permissions(self, dt):
         try:
-            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.READ_MEDIA_IMAGES]
+            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE, Permission.READ_MEDIA_IMAGES]
             request_permissions(permissions)
         except Exception as e: 
             print(f"İzin hatası: {e}")
 
     def open_camera_native(self, instance):
-        """Android Scoped Storage engeline takılmayan yerel Kamera Intent'i"""
+        """Android API 29+ uyumlu güvenli MediaStore Kamera Intent tetikleyicisi"""
         if platform == 'android':
             try:
                 ContentValues = autoclass('android.content.ContentValues')
-                MediaStoreImagesMedia = autoclass('android.provider.MediaStore$Images$Media')
+                Media = autoclass('android.provider.MediaStore$Images$Media')
+                String = autoclass('java.lang.String')
+                Integer = autoclass('java.lang.Integer')
                 
                 context = PythonActivity.mActivity
                 content_resolver = context.getContentResolver()
                 
                 values = ContentValues()
-                values.put(MediaStoreImagesMedia.TITLE, f"gasket_shoot_{int(time.time())}")
-                values.put(MediaStoreImagesMedia.MIME_TYPE, "image/jpeg")
+                filename = f"gasket_{int(time.time())}.jpg"
+                values.put(Media.DISPLAY_NAME, String(filename))
+                values.put(Media.MIME_TYPE, String("image/jpeg"))
                 
-                # Her cihazın yazabileceği ortak alanda sanal bir URI oluşturuyoruz
-                self.camera_uri = content_resolver.insert(MediaStoreImagesMedia.EXTERNAL_CONTENT_URI, values)
+                # Android 10+ için klasör belirterek parcel hatasını engelliyoruz
+                Build = autoclass('android.os.Build$VERSION')
+                if Build.SDK_INT >= 29:
+                    values.put(Media.RELATIVE_PATH, String("Pictures/GasketMatcher"))
+                    values.put(Media.IS_PENDING, Integer(1)) # Yazma işlemi bitene kadar kilitle
                 
+                self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, values)
+                
+                if self.camera_uri is None:
+                    self.lbl_status.text = "Hata: MediaStore URI oluşturulamadı."
+                    return
+                    
                 intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
                 intent.putExtra(MediaStore.EXTRA_OUTPUT, self.camera_uri)
                 PythonActivity.mActivity.startActivityForResult(intent, 1001)
             except Exception as e:
-                self.lbl_status.text = f"Kamera başlatılamadı: {e}"
+                self.lbl_status.text = f"Kamera Başlatılamadı: {str(e)}"
         else:
             self.lbl_status.text = "Kamera özelliği sadece Android cihazlarda aktiftir."
 
@@ -159,11 +170,23 @@ class GasketMatcherMobile(BoxLayout):
         self.update_status_from_thread(f"Başarılı! {count} kayıt eklendi. Toplam: {len(os.listdir(self.db_folder))}")
 
     def handle_activity_result(self, request_code, result_code, intent):
-        if result_code != -1:  # Activity.RESULT_OK kontrolü
+        if result_code != -1: 
             return
         
         if request_code == 1001: # Kameradan Dönüş
             if self.camera_uri is not None:
+                try:
+                    # Android 10+ yazma bittiği için dosya kilidini kaldırıyoruz
+                    Build = autoclass('android.os.Build$VERSION')
+                    if Build.SDK_INT >= 29:
+                        ContentValues = autoclass('android.content.ContentValues')
+                        Integer = autoclass('java.lang.Integer')
+                        values = ContentValues()
+                        values.put("is_pending", Integer(0))
+                        PythonActivity.mActivity.getContentResolver().update(self.camera_uri, values, None, None)
+                except Exception as e:
+                    print(f"Pending kilit kaldırma hatası: {e}")
+                
                 self.lbl_status.text = "Kamera görüntüsü alınıyor..."
                 threading.Thread(target=self.process_android_uri_query, args=(self.camera_uri,), daemon=True).start()
 
@@ -260,9 +283,34 @@ class GasketMatcherMobile(BoxLayout):
         self.lbl_status.text = "Varyasyonlar hesaplanıyor..."
         threading.Thread(target=self.find_best_match, daemon=True).start()
 
-    # --- PC'DEKİ GELİŞMİŞ GÖRÜNTÜ İŞLEME MİMARİSİ (BİREBİR PORT EDİLDİ) ---
+    # --- ANDROID YEREL EXIF ORYANTASYON DÜZELTİCİ MOTORU ---
+    def load_image_with_orientation(self, img_path):
+        """Telefonun dikey/yatay çekim bilgisini okur ve pikselleri doğru yöne döndürür"""
+        img = cv2.imread(img_path)
+        if img is None: 
+            return None
+            
+        if platform == 'android':
+            try:
+                ExifInterface = autoclass('android.media.ExifInterface')
+                exif = ExifInterface(img_path)
+                orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                
+                if orientation == ExifInterface.ORIENTATION_ROTATE_90:
+                    img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+                elif orientation == ExifInterface.ORIENTATION_ROTATE_180:
+                    img = cv2.rotate(img, cv2.ROTATE_180)
+                elif orientation == ExifInterface.ORIENTATION_ROTATE_270:
+                    img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            except Exception as e:
+                print(f"EXIF Oryantasyon hatası: {e}")
+                
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return gray
+
     def preprocess_to_edges(self, img_path):
-        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        # cv2.imread yerine oryantasyon motorumuzu çağırıyoruz
+        img = self.load_image_with_orientation(img_path)
         if img is None: return None
 
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -305,7 +353,6 @@ class GasketMatcherMobile(BoxLayout):
         return final_mask
 
     def generate_query_variations(self, query_mask):
-        """Bilgisayardaki 5 derecelik hassas rotasyon ve ayna/flip motoru"""
         variations = []
         h, w = query_mask.shape
         center = (w // 2, h // 2)
@@ -382,7 +429,6 @@ class GasketMatcherMobile(BoxLayout):
         self.lbl_index.text = "Sonuç: 0 / 0"
 
     def update_result_display(self):
-        """Sonuçları ekrana basan ve PC'deki %150 ölçekleyicisini kullanan metod"""
         if not self.match_results:
             return
             
@@ -396,7 +442,6 @@ class GasketMatcherMobile(BoxLayout):
         self.lbl_status.text = f"Sonuç {self.current_result_index + 1}: {code_name}\nEşleşme: %{similarity_percentage:.2f}"
         self.lbl_index.text = f"Sonuç: {self.current_result_index + 1} / {len(self.match_results)}"
 
-    # --- TAMAMEN AKTİFLEŞTİRİLEN GEZGİN FONKSİYONLARI ---
     def show_prev_result(self, instance):
         if not self.match_results:
             return
