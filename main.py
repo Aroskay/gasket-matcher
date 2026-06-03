@@ -27,7 +27,7 @@ if platform == 'android':
     MediaStore = autoclass('android.provider.MediaStore')
     File = autoclass('java.io.File')
     
-    # Kamera kilitlenmesini çözen StrictMode Protokolü
+    # Android Güvenlik Duvarı Esnetme Protokolü
     StrictMode = autoclass('android.os.StrictMode')
     StrictMode.setThreadPolicy(StrictMode.ThreadPolicy.Builder().permitAll().build())
 else:
@@ -97,6 +97,18 @@ class GasketMatcherMobile(BoxLayout):
         except Exception as e: 
             print(f"İzin hatası: {e}")
 
+    def robust_imread(self, path, is_gray=False):
+        """Türkçe karakterli dosya yollarında çökme yaşanmasını engelleyen güvenli okuyucu"""
+        try:
+            with open(path, "rb") as f:
+                file_bytes = f.read()
+            nparr = np.frombuffer(file_bytes, np.uint8)
+            flag = cv2.IMREAD_GRAYSCALE if is_gray else cv2.IMREAD_COLOR
+            return cv2.imdecode(nparr, flag)
+        except Exception as e:
+            print(f"Resim okuma hatası bypassed: {e}")
+            return None
+
     def get_uri_filename(self, uri):
         if platform == 'android':
             try:
@@ -111,14 +123,18 @@ class GasketMatcherMobile(BoxLayout):
                     cursor.close()
                     return filename
             except Exception as e:
-                print(f"Orijinal isim alınamadı: {e}")
+                print(f"Orijinal isim hatası bypassed: {e}")
         return f"gasket_{int(time.time())}.jpg"
 
     def open_camera_native(self, instance):
-        """StrictMode Bypass ile çalışan kesin çözümlü kamera tetikleyicisi"""
+        """Dışarıya açık paylaşımlı klasör kullanan kesin çözümlü kamera tetikleyicisi"""
         if platform == 'android':
             try:
-                self.camera_file_path = os.path.join(App.get_running_app().user_data_dir, "camera_query.jpg")
+                context = PythonActivity.mActivity
+                # Kameranın erişebileceği dış klasöre kaydet (Çökme engellendi)
+                ext_dir = context.getExternalFilesDir(None).getAbsolutePath()
+                self.camera_file_path = os.path.join(ext_dir, "camera_query.jpg")
+                
                 if os.path.exists(self.camera_file_path):
                     os.remove(self.camera_file_path)
                     
@@ -174,17 +190,17 @@ class GasketMatcherMobile(BoxLayout):
         
         if request_code == 1001: # Kamera dönüşü
             if self.camera_file_path and os.path.exists(self.camera_file_path):
-                self.lbl_status.text = "Kamera görüntüsü işleniyor..."
-                Clock.schedule_once(lambda dt: self.process_new_query(self.camera_file_path), 0)
+                self.lbl_status.text = "Kamera görüntüsü alınıyor..."
+                Clock.schedule_once(lambda dt: self.process_new_query(self.camera_file_path), 0.2)
             else:
-                self.lbl_status.text = "Hata: Kamera resmi hafızaya kaydedilemedi."
+                self.lbl_status.text = "Hata: Kamera resmi hafızaya yazamadı."
 
-        elif request_code == 1002: # Tekli Galeri dönüşü
+        elif request_code == 1002: # Galeri tekli dönüşü
             if intent is not None and intent.getData() is not None:
                 self.lbl_status.text = "Görsel yükleniyor..."
                 threading.Thread(target=self.process_android_uri_query, args=(intent.getData(),), daemon=True).start()
                     
-        elif request_code == 1003: # DB Çoklu aktarım dönüşü
+        elif request_code == 1003: # Çoklu DB aktarım dönüşü
             if intent is not None:
                 uris_with_names = []
                 clip_data = intent.getClipData()
@@ -230,21 +246,23 @@ class GasketMatcherMobile(BoxLayout):
         else:
             self.update_status_from_thread("Hata: Görsel kopyalanamadı.")
 
-    # --- ANLIK AKTARIM YÜZDESİ GÖSTEREN MOTOR ---
     def process_android_uris_bulk(self, uris_with_names):
-        total = len(uris_with_names)
-        count = 0
-        for idx, (uri, orig_name) in enumerate(uris_with_names):
-            dest_path = os.path.join(self.db_folder, orig_name)
-            if self.copy_uri_to_local_file(uri, dest_path):
-                count += 1
-            
-            # Anlık yüzde hesabı yapılıp ekrana basılıyor
-            progress = ((idx + 1) / total) * 100
-            self.update_status_from_thread(f"Dosyalar aktarılıyor: {idx+1} / {total} (%{progress:.1f})\nKayıt: {orig_name}")
-            time.sleep(0.02) # Arayüzün donmaması için nefes alma süresi
-            
-        self.update_status_from_thread(f"Başarılı! {count} adet orijinal isimli conta eklendi.\nToplam DB: {len(os.listdir(self.db_folder))}")
+        """Aktarım yüzdesini anlık gösteren güvenli döngü"""
+        try:
+            total = len(uris_with_names)
+            count = 0
+            for idx, (uri, orig_name) in enumerate(uris_with_names):
+                dest_path = os.path.join(self.db_folder, orig_name)
+                if self.copy_uri_to_local_file(uri, dest_path):
+                    count += 1
+                
+                progress = ((idx + 1) / total) * 100
+                self.update_status_from_thread(f"Dosyalar aktarılıyor: {idx+1}/{total} (%{progress:.1f})\nEklenen: {orig_name}")
+                time.sleep(0.01)
+                
+            self.update_status_from_thread(f"Başarılı! {count} adet orijinal isimli conta eklendi.\nToplam DB: {len(os.listdir(self.db_folder))}")
+        except Exception as e:
+            self.update_status_from_thread(f"Aktarımda kritik hata oluştu: {str(e)}")
 
     def show_clear_db_popup(self, instance):
         content = BoxLayout(orientation='vertical', padding=15, spacing=15)
@@ -270,16 +288,14 @@ class GasketMatcherMobile(BoxLayout):
         self.query_image_path = path
         self.img_query.source = path
         self.img_query.reload()
-        self.lbl_status.text = "Geometri analiz ediliyor..."
+        self.lbl_status.text = "Geometri analiz ediliyor... Hazırlanıyor..."
         threading.Thread(target=self.find_best_match, daemon=True).start()
 
     def load_image_and_optimize(self, img_path):
-        """Görseli yükler, yönünü düzeltir ve donmayı engellemek için küçültür"""
-        img = cv2.imread(img_path)
+        img = self.robust_imread(img_path, is_gray=False)
         if img is None: 
             return None
         
-        # Android Yön Sensörü Düzeltmesi
         if platform == 'android':
             try:
                 ExifInterface = autoclass('android.media.ExifInterface')
@@ -296,8 +312,8 @@ class GasketMatcherMobile(BoxLayout):
                 
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # DONMAYI ENGELLEYEN KRİTİK ADIM: Çözünürlüğü optimize et (Max 600px)
-        max_pixel = 600
+        # Hız Optimizasyonu (Maksimum 500 piksel)
+        max_pixel = 500
         h, w = img_gray.shape[:2]
         if max(h, w) > max_pixel:
             scale = max_pixel / max(h, w)
@@ -306,7 +322,7 @@ class GasketMatcherMobile(BoxLayout):
         return img_gray
 
     def extract_gasket_contour(self, img_gray):
-        blurred = cv2.GaussianBlur(img_gray, (7, 7), 0)
+        blurred = cv2.GaussianBlur(img_gray, (5, 5), 0)
         _, thresh1 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         _, thresh2 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
@@ -318,83 +334,96 @@ class GasketMatcherMobile(BoxLayout):
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for c in contours:
                 area = cv2.contourArea(c)
-                if 0.04 * img_area < area < 0.95 * img_area:
+                if 0.03 * img_area < area < 0.96 * img_area:
                     if area > max_area:
                         max_area = area
                         best_contour = c
                         
         if best_contour is None:
-            edged = cv2.Canny(blurred, 30, 130)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            edged = cv2.Canny(blurred, 30, 120)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             closed = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, kernel)
             contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for c in contours:
                 area = cv2.contourArea(c)
-                if 0.04 * img_area < area < 0.95 * img_area:
+                if 0.03 * img_area < area < 0.96 * img_area:
                     if area > max_area:
                         max_area = area
                         best_contour = c
         return best_contour
 
-    # --- ANLIK TARAMA YÜZDESİ GÖSTEREN MOTOR (DONMAZ) ---
+    # --- ASLA ÇÖKMEYEN CANLI YÜZDE GÖSTERGELİ ANALİZ MOTORU ---
     def find_best_match(self):
-        db_files = [f for f in os.listdir(self.db_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        if not db_files:
-            self.update_status_from_thread("Hata: Veritabanında karşılaştırılacak conta yok.")
-            return
+        try:
+            db_files = [f for f in os.listdir(self.db_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            if not db_files:
+                self.update_status_from_thread("Hata: Veritabanında karşılaştırılacak conta yok.")
+                return
 
-        query_img = self.load_image_and_optimize(self.query_image_path)
-        if query_img is None:
-            self.update_status_from_thread("Hata: Aranan resim yüklenemedi.")
-            return
+            query_img = self.load_image_and_optimize(self.query_image_path)
+            if query_img is None:
+                self.update_status_from_thread("Hata: Aranan resim çözümlenemedi.")
+                return
 
-        c_query = self.extract_gasket_contour(query_img)
-        if c_query is None:
-            self.update_status_from_thread("Hata: Fotoğrafta net bir conta kalıbı bulunamadı.")
-            return
+            c_query = self.extract_gasket_contour(query_img)
+            if c_query is None:
+                self.update_status_from_thread("Hata: Fotoğrafta net bir conta dış hattı yakalanamadı.")
+                return
 
-        results = []
-        total_files = len(db_files)
-        
-        for idx, f in enumerate(db_files):
-            db_path = os.path.join(self.db_folder, f)
-            db_img = cv2.imread(db_path, cv2.IMREAD_GRAYSCALE)
-            if db_img is None: 
-                continue
-                
-            # DB görsellerini de tarama anında optimize boyutlara çekiyoruz (Yıldırım hızı)
-            max_pixel = 600
-            h_d, w_d = db_img.shape[:2]
-            if max(h_d, w_d) > max_pixel:
-                scale_d = max_pixel / max(h_d, w_d)
-                db_img = cv2.resize(db_img, (int(w_d * scale_d), int(h_d * scale_d)))
-                
-            _, db_thresh = cv2.threshold(db_img, 15, 255, cv2.THRESH_BINARY)
-            db_contours, _ = cv2.findContours(db_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            results = []
+            total_files = len(db_files)
             
-            if not db_contours: 
-                continue
-            c_db = max(db_contours, key=cv2.contourArea)
+            for idx, f in enumerate(db_files):
+                # Her adımda canlı yüzdeyi ekrana bas ve donmayı engelle
+                progress = ((idx + 1) / total_files) * 100
+                self.update_status_from_thread(f"Geometri analiz ediliyor: {idx+1}/{total_files} (%{progress:.1f})\nTaranan: {f}")
+                time.sleep(0.003) # Main loop'un arayüzü çizmesine izin ver
+                
+                db_path = os.path.join(self.db_folder, f)
+                db_img = self.robust_imread(db_path, is_gray=True)
+                if db_img is None: 
+                    continue
+                    
+                # DB görsel boyut optimizasyonu
+                max_pixel = 500
+                h_d, w_d = db_img.shape[:2]
+                if max(h_d, w_d) > max_pixel:
+                    scale_d = max_pixel / max(h_d, w_d)
+                    db_img = cv2.resize(db_img, (int(w_d * scale_d), int(h_d * scale_d)))
+                    
+                try:
+                    _, db_thresh = cv2.threshold(db_img, 15, 255, cv2.THRESH_BINARY)
+                    db_contours, _ = cv2.findContours(db_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    
+                    if not db_contours: 
+                        continue
+                    c_db = max(db_contours, key=cv2.contourArea)
 
-            # Şekil eşleştirme
-            score = cv2.matchShapes(c_query, c_db, cv2.CONTOUR_MATCH_I1, 0)
-            results.append((db_path, score))
+                    # Geometrik doğruluk kontrolü (Kritik çökme koruması)
+                    if c_db is None or len(c_db) < 3 or len(c_query) < 3:
+                        continue
+
+                    score = cv2.matchShapes(c_query, c_db, cv2.CONTOUR_MATCH_I1, 0)
+                    results.append((db_path, score))
+                except Exception as loop_error:
+                    # Tek bir hatalı görselde çöküp kapanmayı engelle, devam et
+                    print(f"{f} görseli analiz edilirken hata geçildi: {loop_error}")
+                    continue
+                            
+            results.sort(key=lambda x: x[1])
+            filtered_results = [r for r in results if r[1] < 2.0]
             
-            # ANLIK TARAMA YÜZDESİ GÖSTERİMİ
-            progress = ((idx + 1) / total_files) * 100
-            self.update_status_from_thread(f"Geometri analiz ediliyor: {idx+1} / {total_files} (%{progress:.1f})\nKarşılaştırılan: {f}")
-            time.sleep(0.005) # İşlemciyi kilitlemeyip arayüzü tazelemek için kritik milisaniyelik uyku
-                        
-        results.sort(key=lambda x: x[1])
-        filtered_results = [r for r in results if r[1] < 1.9]
-        
-        if filtered_results:
-            self.match_results = filtered_results
-            self.current_result_index = 0
-            Clock.schedule_once(lambda dt: self.update_result_display(), 0)
-        else:
-            self.match_results = []
-            Clock.schedule_once(lambda dt: self.set_no_match_ui(), 0)
+            if filtered_results:
+                self.match_results = filtered_results
+                self.current_result_index = 0
+                Clock.schedule_once(lambda dt: self.update_result_display(), 0)
+            else:
+                self.match_results = []
+                Clock.schedule_once(lambda dt: self.set_no_match_ui(), 0)
+                
+        except Exception as global_error:
+            # Thread içi ölümcül hata yakalayıcı (Uygulamanın kapanmasını önler)
+            self.update_status_from_thread(f"Analiz durduruldu: {str(global_error)}")
 
     def set_no_match_ui(self):
         self.img_match.source = ''
