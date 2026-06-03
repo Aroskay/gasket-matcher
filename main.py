@@ -2,6 +2,7 @@ import sys
 import os
 import shutil
 import threading
+import time
 import cv2
 import numpy as np
 from kivy.app import App
@@ -14,23 +15,18 @@ from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.utils import platform
-from plyer import filechooser
 
-# =============================================================================
-# ANDROID YEREL MİMARİ ENTEGRASYONU
-# =============================================================================
+# Android platformuna özel yerel kütüphaneler
 if platform == 'android':
     from android.permissions import request_permissions, Permission
-    from jnius import autoclass, cast
+    from android import activity
+    from jnius import autoclass, cast, ByteArray
     
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
     Intent = autoclass('android.content.Intent')
-    MediaStore = autoclass('android.provider.MediaStore')
-    MediaStoreImagesMedia = autoclass('android.provider.MediaStore$Images$Media')
     Uri = autoclass('android.net.Uri')
-    Environment = autoclass('android.os.Environment')
-    File = autoclass('java.io.File')
-    StrictMode = autoclass('android.os.StrictMode')
+else:
+    from plyer import filechooser
 
 Window.clearcolor = (0.1, 0.1, 0.1, 1)
 
@@ -44,16 +40,11 @@ class GasketMatcherMobile(BoxLayout):
             os.makedirs(self.db_folder)
             
         self.query_image_path = None
-        self.match_results = []
-        self.current_result_index = 0
 
-        # --- ANDROID AKTİVİTE BAĞLANTISI ---
+        # --- ANDROID AKTİVİTE VE İZİN BAĞLANTILARI ---
         if platform == 'android':
-            try:
-                VmPolicy = autoclass('android.os.StrictMode$VmPolicy$Builder')
-                StrictMode.setVmPolicy(VmPolicy().build())
-            except Exception as e:
-                print(f"StrictMode Hatası: {e}")
+            # Android yerel dosya seçici sonuçlarını yakalamak için bind işlemi
+            activity.bind(on_activity_result=self.handle_activity_result)
             Clock.schedule_once(self.request_android_permissions, 1)
 
         # --- ARAYÜZ (GUI) KURULUMU ---
@@ -80,9 +71,9 @@ class GasketMatcherMobile(BoxLayout):
         self.add_widget(self.lbl_status)
 
         btn_grid = GridLayout(cols=2, size_hint=(1, 0.25), spacing=10)
-        btn_grid.add_widget(Button(text="📷 Kameradan Tara", background_color=(0.17, 0.78, 0.52, 1), on_press=self.open_camera_native))
+        btn_grid.add_widget(Button(text="📷 Kameradan Tara", background_color=(0.17, 0.78, 0.52, 1), on_press=self.open_camera_plyer))
         btn_grid.add_widget(Button(text="🖼️ Galeriden Seç", background_color=(0.12, 0.41, 0.64, 1), on_press=self.open_gallery_native))
-        btn_grid.add_widget(Button(text="📂 Klasörden DB'ye Aktar", background_color=(0.7, 0.4, 0.1, 1), on_press=self.bulk_import_native))
+        btn_grid.add_widget(Button(text="📂 Çoklu Görsel Seç (DB'ye)", background_color=(0.7, 0.4, 0.1, 1), on_press=self.bulk_import_native))
         btn_grid.add_widget(Button(text="🗑️ Veritabanını Temizle", background_color=(0.8, 0.2, 0.2, 1), on_press=self.show_clear_db_popup))
         self.add_widget(btn_grid)
 
@@ -95,42 +86,135 @@ class GasketMatcherMobile(BoxLayout):
 
     def request_android_permissions(self, dt):
         try:
-            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE]
+            permissions = [Permission.CAMERA, Permission.READ_MEDIA_IMAGES]
             request_permissions(permissions)
-        except Exception as e: print(f"İzin hatası: {e}")
+        except Exception as e: 
+            print(f"İzin hatası: {e}")
 
-    def open_camera_native(self, instance):
-        if platform != 'android': return
+    def open_camera_plyer(self, instance):
         self.query_image_path = os.path.join(App.get_running_app().user_data_dir, "temp_query.jpg")
-        activity = PythonActivity.mActivity
-        intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-        file_uri = Uri.fromFile(File(self.query_image_path))
-        intent.putExtra(MediaStore.EXTRA_OUTPUT, cast('android.os.Parcelable', file_uri))
-        activity.startActivityForResult(intent, 101)
+        try:
+            from plyer import camera
+            camera.take_picture(filename=self.query_image_path, on_complete=self.on_camera_complete)
+        except Exception as e:
+            self.lbl_status.text = f"Kamera Başlatılamadı: {e}"
+
+    def on_camera_complete(self, filename):
+        if os.path.exists(filename) and os.path.getsize(filename) > 0:
+            Clock.schedule_once(lambda dt: self.process_new_query(filename), 0)
 
     def open_gallery_native(self, instance):
-        filechooser.open_file(on_selection=lambda s: self.process_new_query(s[0]) if s else None)
+        if platform == 'android':
+            try:
+                intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                intent.addCategory(Intent.CATEGORY_OPENABLE)
+                intent.setType("image/*")
+                PythonActivity.mActivity.startActivityForResult(intent, 1002)
+            except Exception as e:
+                self.lbl_status.text = f"Galeri açma hatası: {e}"
+        else:
+            filechooser.open_file(on_selection=lambda s: self.process_new_query(s[0]) if s else None)
 
     def bulk_import_native(self, instance):
-        filechooser.choose_dir(on_selection=lambda s: threading.Thread(target=self.run_bulk_import, args=(s[0],), daemon=True).start() if s else None)
+        """Android 13 uyumlu çoklu görsel seçerek toplu içe aktarma tetikleyicisi"""
+        if platform == 'android':
+            try:
+                intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                intent.addCategory(Intent.CATEGORY_OPENABLE)
+                intent.setType("image/*")
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True) # Çoklu seçimi aktif et
+                PythonActivity.mActivity.startActivityForResult(intent, 1003)
+            except Exception as e:
+                self.lbl_status.text = f"Çoklu seçim arayüzü hatası: {e}"
+        else:
+            filechooser.open_file(multiple=True, on_selection=self.handle_desktop_bulk_import)
 
-    def run_bulk_import(self, folder_path):
+    def handle_desktop_bulk_import(self, selection):
+        if not selection: return
+        threading.Thread(target=self.run_desktop_bulk_import, args=(selection,), daemon=True).start()
+
+    def run_desktop_bulk_import(self, paths):
+        count = 0
+        for path in paths:
+            if path.lower().endswith(('.png', '.jpg', '.jpeg')):
+                filename = os.path.basename(path)
+                shutil.copyfile(path, os.path.join(self.db_folder, filename))
+                count += 1
+        self.update_status_from_thread(f"Başarılı! {count} kayıt eklendi. Toplam: {len(os.listdir(self.db_folder))}")
+
+    def handle_activity_result(self, request_code, result_code, intent):
+        """Android yerel dosya yöneticisinden dönen URI verilerini yakalayan metod"""
+        if result_code != -1: # Android Activity.RESULT_OK = -1
+            return
+        
+        if request_code == 1002: # Tekli Görsel Seçimi (Aranan)
+            if intent is not None:
+                uri = intent.getData()
+                if uri is not None:
+                    self.lbl_status.text = "Görsel yükleniyor..."
+                    threading.Thread(target=self.process_android_uri_query, args=(uri,), daemon=True).start()
+                    
+        elif request_code == 1003: # Çoklu Görsel Seçimi (DB Aktarım)
+            if intent is not None:
+                uris = []
+                clip_data = intent.getClipData()
+                if clip_data is not None: # Birden fazla görsel seçildiyse
+                    for i in range(clip_data.getItemCount()):
+                        uris.append(clip_data.getItemAt(i).getUri())
+                else: # Sadece tek bir görsel seçilip çıkıldıysa
+                    uri = intent.getData()
+                    if uri is not None:
+                        uris.append(uri)
+                
+                if uris:
+                    self.lbl_status.text = f"{len(uris)} görsel aktarılıyor, lütfen bekleyin..."
+                    threading.Thread(target=self.process_android_uris_bulk, args=(uris,), daemon=True).start()
+
+    def copy_uri_to_local_file(self, uri, dest_path):
+        """Android Saf içerik URI'sini byte akışı ile yerel depolamaya kopyalar"""
         try:
-            if not os.path.exists(folder_path): return
-            count = 0
-            for f in os.listdir(folder_path):
-                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    shutil.copyfile(os.path.join(folder_path, f), os.path.join(self.db_folder, f))
-                    count += 1
-            self.update_status_from_thread(f"Başarılı! {count} kayıt eklendi.")
-        except Exception as e: self.update_status_from_thread(f"Hata: {e}")
+            context = PythonActivity.mActivity
+            content_resolver = context.getContentResolver()
+            input_stream = content_resolver.openInputStream(uri)
+            FileOutputStream = autoclass('java.io.FileOutputStream')
+            out_stream = FileOutputStream(dest_path)
+            
+            buffer = ByteArray(4096)
+            while True:
+                bytes_read = input_stream.read(buffer)
+                if bytes_read == -1:
+                    break
+                out_stream.write(buffer, 0, bytes_read)
+                
+            input_stream.close()
+            out_stream.close()
+            return True
+        except Exception as e:
+            print(f"Kopyalama Hatası: {e}")
+            return False
+
+    def process_android_uri_query(self, uri):
+        local_path = os.path.join(App.get_running_app().user_data_dir, "temp_query.jpg")
+        if self.copy_uri_to_local_file(uri, local_path):
+            Clock.schedule_once(lambda dt: self.process_new_query(local_path), 0)
+        else:
+            self.update_status_from_thread("Hata: Görsel kopyalanamadı.")
+
+    def process_android_uris_bulk(self, uris):
+        count = 0
+        for i, uri in enumerate(uris):
+            filename = f"gasket_{int(time.time())}_{i}.jpg"
+            dest_path = os.path.join(self.db_folder, filename)
+            if self.copy_uri_to_local_file(uri, dest_path):
+                count += 1
+        self.update_status_from_thread(f"Başarılı! {count} görsel DB'ye eklendi. Toplam: {len(os.listdir(self.db_folder))}")
 
     def show_clear_db_popup(self, instance):
         content = BoxLayout(orientation='vertical', padding=15, spacing=15)
         content.add_widget(Label(text="Tüm contalar silinecek. Emin misiniz?"))
         btn_layout = BoxLayout(size_hint=(1, 0.4), spacing=10)
         btn_yes = Button(text="Evet, Sil")
-        btn_yes.bind(on_release=lambda x: [self.confirm_clear_database(), popup.dismiss()])
+        btn_yes.bind(on_release=lambda x: [threading.Thread(target=self.confirm_clear_database, daemon=True).start(), popup.dismiss()])
         btn_no = Button(text="İptal", on_release=lambda x: popup.dismiss())
         btn_layout.add_widget(btn_yes); btn_layout.add_widget(btn_no)
         content.add_widget(btn_layout)
@@ -138,13 +222,18 @@ class GasketMatcherMobile(BoxLayout):
         popup.open()
 
     def confirm_clear_database(self):
-        for f in os.listdir(self.db_folder): os.remove(os.path.join(self.db_folder, f))
-        self.lbl_status.text = "Veritabanı temizlendi."
+        try:
+            for f in os.listdir(self.db_folder): 
+                os.remove(os.path.join(self.db_folder, f))
+            self.update_status_from_thread("Veritabanı temizlendi.")
+        except Exception as e:
+            self.update_status_from_thread(f"Silme hatası: {e}")
 
     def process_new_query(self, path):
         self.query_image_path = path
         self.img_query.source = path
         self.img_query.reload()
+        self.lbl_status.text = "Görüntü işleniyor ve eşleştiriliyor..."
         self.start_matching_thread()
 
     def preprocess_to_edges(self, img_path):
@@ -158,25 +247,46 @@ class GasketMatcherMobile(BoxLayout):
         if not contours: return None
         largest = max(contours, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest)
-        return cv2.resize(edges[y:y+h, x:x+w], (400, 400), interpolation=cv2.INTER_NEAREST)
+        
+        cropped = edges[y:y+h, x:x+w]
+        if cropped.size == 0: return None
+        return cv2.resize(cropped, (400, 400), interpolation=cv2.INTER_NEAREST)
 
     def generate_query_variations(self, mask):
         return [cv2.warpAffine(mask, cv2.getRotationMatrix2D((200, 200), a, 1.0), (400, 400)) for a in range(0, 360, 10)]
 
-    def start_matching_thread(self): threading.Thread(target=self.find_best_match, daemon=True).start()
+    def start_matching_thread(self): 
+        threading.Thread(target=self.find_best_match, daemon=True).start()
 
     def find_best_match(self):
         db_files = [f for f in os.listdir(self.db_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        if not db_files:
+            self.update_status_from_thread("Hata: Veritabanında karşılaştırılacak conta yok.")
+            return
+
         q_mask = self.preprocess_to_edges(self.query_image_path)
-        if q_mask is None: return
-        vars = self.generate_query_variations(q_mask)
-        best_score, best_file = 0, ""
+        if q_mask is None:
+            self.update_status_from_thread("Hata: Aranan contanın kenarları tespit edilemedi.")
+            return
+            
+        q_vars = self.generate_query_variations(q_mask)
+        best_score, best_file = 0.0, ""
+        
         for f in db_files:
             db_mask = self.preprocess_to_edges(os.path.join(self.db_folder, f))
             if db_mask is not None:
-                score = np.count_nonzero(cv2.bitwise_and(vars[0], db_mask)) / np.count_nonzero(cv2.bitwise_or(vars[0], db_mask) + 1e-6)
-                if score > best_score: best_score, best_file = score, f
-        Clock.schedule_once(lambda dt: self.finalize_matching(best_file, best_score), 0)
+                for var in q_vars:
+                    intersection = np.count_nonzero(cv2.bitwise_and(var, db_mask))
+                    union = np.count_nonzero(cv2.bitwise_or(var, db_mask))
+                    if union == 0: continue
+                    score = intersection / union
+                    if score > best_score: 
+                        best_score, best_file = score, f
+                        
+        if best_file:
+            Clock.schedule_once(lambda dt: self.finalize_matching(best_file, best_score), 0)
+        else:
+            self.update_status_from_thread("Eşleşme bulunamadı.")
 
     def finalize_matching(self, filename, score):
         path = os.path.join(self.db_folder, filename)
@@ -184,11 +294,15 @@ class GasketMatcherMobile(BoxLayout):
         self.img_match.reload()
         self.lbl_status.text = f"Eşleşme: {filename} (%{score*100:.1f})"
 
-    def update_status_from_thread(self, text): Clock.schedule_once(lambda dt: setattr(self.lbl_status, 'text', text), 0)
+    def update_status_from_thread(self, text): 
+        Clock.schedule_once(lambda dt: setattr(self.lbl_status, 'text', text), 0)
+        
     def show_prev_result(self, instance): pass
     def show_next_result(self, instance): pass
 
 class GasketApp(App):
-    def build(self): return GasketMatcherMobile()
+    def build(self): 
+        return GasketMatcherMobile()
 
-if __name__ == "__main__": GasketApp().run()
+if __name__ == "__main__": 
+    GasketApp().run()
