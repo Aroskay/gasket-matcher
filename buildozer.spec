@@ -52,7 +52,8 @@ android.archs = arm64-v8a, armeabi-v7a
 # =============================================================================
 # 🛠️ GRADLE VE SİSTEM AYARLARI
 # =============================================================================
-# DÜZELTME: OpenCV'nin Android'de çökmesini engelleyen core kütüphaneleri eklendi
+# (list) Android Gradle bağımlılıkları
+# Hataya sebep olan 'androidx.documentfile:documentfile:1.0.1' kütüphanesini açıkça ekledik.
 android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1, androidx.core:core:1.6.0
 
 # (bool) Android yedekleme izni
