@@ -1,8 +1,5 @@
 [app]
 
-# AndroidX desteğini zorunlu kılın
-android.enable_androidx = True
-
 # (str) Uygulama Başlığı
 title = Gasket Matcher
 
@@ -21,7 +18,7 @@ version = 1.0
 
 # (list) Uygulama Bağımlılıkları
 # DÜZELTME: opencv tekrar buraya eklendi. Artık paket içine gömülü derlenecek.
-requirements = python3, kivy, opencv, numpy, pyjnius, android
+requirements = python3, kivy, plyer, opencv, numpy, pyjnius, android
 
 # (str) Ekran yönü (Dikey)
 orientation = portrait
@@ -50,8 +47,6 @@ android.archs = arm64-v8a, armeabi-v7a
 # 🛠️ GRADLE VE SİSTEM AYARLARI
 # =============================================================================
 # (list) Android Gradle bağımlılıkları
-# Sadece şu şekilde tırnaksız ve boşluksuz tek bir satır deneyin
-android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1,androidx.core:core:1.6.0
 
 # (bool) Android yedekleme izni
 android.allow_backup = True
