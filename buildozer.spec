@@ -1,35 +1,64 @@
 [app]
+
+# (str) Uygulama Başlığı
 title = Gasket Matcher
+
+# (str) Paket adı ve domain bilgisi
 package.name = gasketmatcher
 package.domain = org.aroskay
+
+# (str) Kaynak kodların olduğu dizin (.) ana dizini temsil eder
 source.dir = .
+
+# (list) Pakete dahil edilecek uzantılar
 source.include_exts = py,png,jpg,jpeg,kv,atlas
+
+# (str) Uygulama versiyonu
 version = 1.0
 
-# Bağımlılıklar (OpenCV'yi main.py içinden yükleme stratejimiz sabit kalıyor)
-requirements = python3, kivy, numpy, pyjnius, android
+# (list) Uygulama Bağımlılıkları
+# DÜZELTME: opencv tekrar buraya eklendi. Artık paket içine gömülü derlenecek.
+requirements = python3, kivy, opencv, numpy, pyjnius, android
 
+# (str) Ekran yönü (Dikey)
 orientation = portrait
 fullscreen = 0
 
+# (list) Android İzinleri (Kamera ve Depolama izinleri)
 android.permissions = CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
 
-# API Seviyeleri (NumPy için en az 24 olmalı)
+# =============================================================================
+# 🚨 GİTHUB ACTIONS SUNUCU VE SÜRÜM UYUMLULUK AYARLARI
+# =============================================================================
+# (int) Hedef Android API Seviyesi
 android.api = 33
+
+# (int) Minimum API Seviyesi (NumPy kütüphanesi için en az 24 olmalıdır)
 android.minapi = 24
 
-# 🚨 REGEX VE 404 HATASINI ÇÖZEN RESMİ SÜRÜM
+# (str) Android NDK Sürümü
+# Google sunucularından 404 hatası almamak için resmi kararlı sürüm yazıldı.
 android.ndk = 26b
+
+# (int) NDK API Seviyesi
 android.ndk_api = 24
+
+# C++ paylaşımlı kütüphane çakışmalarını engellemek için STL yapısı zorunlu kılınıyor
 android.ndk_stl = c++_shared
 
-# İşlemci Mimarileri
+# (list) Desteklenen İşlemci Mimarileri
 android.archs = arm64-v8a, armeabi-v7a
 
-# Gradle Ayarları
-android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1
+# =============================================================================
+# 🛠️ GRADLE VE SİSTEM AYARLARI
+# =============================================================================
+# DÜZELTME: OpenCV'nin Android'de çökmesini engelleyen core kütüphaneleri eklendi
+android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1, androidx.core:core:1.6.0
+
+# (bool) Android yedekleme izni
 android.allow_backup = True
 
 [buildozer]
+# (int) Log seviyesi (Hataları detaylı görmek için en yüksek seviye olan 2 yapıldı)
 log_level = 2
 warn_on_root = 1
