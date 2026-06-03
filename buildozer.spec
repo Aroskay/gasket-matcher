@@ -6,13 +6,11 @@ source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,atlas
 version = 1.0
 
-# Gerekli Kütüphaneler (Mobil ve Java katmanları tam eklendi)
 requirements = python3,kivy,plyer,opencv,numpy,pyjnius,android
 
 orientation = portrait
 fullscreen = 0
 
-# Kamera ve Depolama için Full İzin Paketi
 android.permissions = CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, READ_MEDIA_IMAGES
 
 android.api = 33
