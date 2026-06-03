@@ -60,9 +60,10 @@ jobs:
         run: yes | buildozer android debug || true
 
       - name: Build APK with Buildozer
-        env:
-          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.3.13750724
-        run: buildozer android debug
+        run: |
+          # Önce cache varsa bile eski/hatalı platform dosyalarını temizleyelim
+          rm -rf .buildozer/android/platform/android-ndk-*
+          buildozer android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
