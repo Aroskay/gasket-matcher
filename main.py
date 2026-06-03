@@ -19,7 +19,7 @@ from kivy.utils import platform
 if platform == 'android':
     from android.permissions import request_permissions, Permission
     from android import activity
-    from jnius import autoclass, cast
+    from jnius import autoclass
     
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
     Intent = autoclass('android.content.Intent')
@@ -34,7 +34,7 @@ class GasketMatcherMobile(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
         
-        # --- VERİTABANI DEĞİŞKENLERİ ---
+        # --- DEĞİŞKENLER ---
         self.db_folder = os.path.join(App.get_running_app().user_data_dir, "GasketDB")
         if not os.path.exists(self.db_folder):
             os.makedirs(self.db_folder)
@@ -42,7 +42,7 @@ class GasketMatcherMobile(BoxLayout):
         self.query_image_path = None
         self.match_results = []
         self.current_result_index = 0
-        self.camera_uri = None 
+        self.camera_file_path = None
 
         if platform == 'android':
             activity.bind(on_activity_result=self.handle_activity_result)
@@ -87,60 +87,56 @@ class GasketMatcherMobile(BoxLayout):
 
     def request_android_permissions(self, dt):
         try:
-            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE, Permission.READ_MEDIA_IMAGES]
+            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE]
             request_permissions(permissions)
         except Exception as e: 
-            print(f"İzin isteme hatası: {e}")
+            print(f"İzin hatası: {e}")
 
-    def open_camera_native(self, instance):
-        """Çift katmanlı (Fallback korumalı) evrensel Kamera Intent tetikleyicisi"""
+    def get_uri_filename(self, uri):
+        """Android URI yapısından dosyanın orijinal adını çeker"""
         if platform == 'android':
             try:
-                ContentValues = autoclass('android.content.ContentValues')
-                Media = autoclass('android.provider.MediaStore$Images$Media')
-                String = autoclass('java.lang.String')
-                
                 context = PythonActivity.mActivity
                 content_resolver = context.getContentResolver()
+                MediaColumns = autoclass('android.provider.MediaStore$MediaColumns')
                 
-                filename = f"gasket_{int(time.time())}.jpg"
+                cursor = content_resolver.query(uri, None, None, None, None)
+                if cursor is not None and cursor.moveToFirst():
+                    name_index = cursor.getColumnIndex(MediaColumns.DISPLAY_NAME)
+                    filename = cursor.getString(name_index)
+                    cursor.close()
+                    return filename
+            except Exception as e:
+                print(f"Orijinal isim çekilemedi: {e}")
+        return f"gasket_{int(time.time())}.jpg"
+
+    def open_camera_native(self, instance):
+        """Güvenli FileProvider kullanan Kamera tetikleyicisi (Çökme yapmaz)"""
+        if platform == 'android':
+            try:
+                File = autoclass('java.io.File')
+                FileProvider = autoclass('androidx.core.content.FileProvider')
+                context = PythonActivity.mActivity
                 
-                # 1. Aşama: En geniş kapsamlı temel değerleri ata
-                values = ContentValues()
-                values.put(Media.DISPLAY_NAME, String(filename))
-                values.put(Media.MIME_TYPE, String("image/jpeg"))
+                # Medya veritabanına bulaşmadan doğrudan uygulama cache klasörüne yazıyoruz
+                cache_dir = context.getExternalCacheDir()
+                filename = "secure_camera_query.jpg"
+                self.camera_file_path = os.path.join(cache_dir.getAbsolutePath(), filename)
                 
-                # Sürüme özel gelişmiş parametreleri dene (Hata verirse güvenle es geçilir)
-                try:
-                    Build = autoclass('android.os.Build$VERSION')
-                    if Build.SDK_INT >= 29:
-                        values.put(Media.RELATIVE_PATH, String("Pictures/GasketMatcher"))
-                        try:
-                            values.put("is_pending", autoclass('java.lang.Integer')(1))
-                        except:
-                            pass
-                except:
-                    pass
-                
-                # 2. Aşama: Veritabanına ekle, eğer sütun hatası verirse çökmesini engelle ve yalın ekle
-                try:
-                    self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, values)
-                except Exception as db_err:
-                    print(f"Gelişmiş insert başarısız, yalın deniniyor: {db_err}")
-                    fallback_values = ContentValues()
-                    fallback_values.put(Media.DISPLAY_NAME, String(filename))
-                    fallback_values.put(Media.MIME_TYPE, String("image/jpeg"))
-                    self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, fallback_values)
-                
-                if self.camera_uri is None:
-                    self.lbl_status.text = "Hata: Media Deposu oluşturulamadı."
-                    return
+                if os.path.exists(self.camera_file_path):
+                    os.remove(self.camera_file_path)
                     
+                image_file = File(cache_dir, filename)
+                authority = context.getPackageName() + ".fileprovider"
+                camera_uri = FileProvider.getUriForFile(context, authority, image_file)
+                
                 intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                intent.putExtra(MediaStore.EXTRA_OUTPUT, self.camera_uri)
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, camera_uri)
+                intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                
                 PythonActivity.mActivity.startActivityForResult(intent, 1001)
             except Exception as e:
-                self.lbl_status.text = f"Kamera Başlatılamadı: {str(e)}"
+                self.lbl_status.text = f"Kamera Başlatılamadı:\n{str(e)}"
         else:
             self.lbl_status.text = "Kamera özelliği sadece Android cihazlarda aktiftir."
 
@@ -171,85 +167,69 @@ class GasketMatcherMobile(BoxLayout):
 
     def handle_desktop_bulk_import(self, selection):
         if not selection: return
-        threading.Thread(target=self.run_desktop_bulk_import, args=(selection,), daemon=True).start()
-
-    def run_desktop_bulk_import(self, paths):
         count = 0
-        for path in paths:
+        for path in selection:
             if path.lower().endswith(('.png', '.jpg', '.jpeg')):
                 filename = os.path.basename(path)
                 shutil.copyfile(path, os.path.join(self.db_folder, filename))
                 count += 1
-        self.update_status_from_thread(f"Başarılı! {count} kayıt eklendi. Toplam: {len(os.listdir(self.db_folder))}")
+        self.lbl_status.text = f"Başarılı! {count} kayıt eklendi. Toplam: {len(os.listdir(self.db_folder))}"
 
     def handle_activity_result(self, request_code, result_code, intent):
         if result_code != -1: 
             return
         
-        if request_code == 1001: # Kameradan Dönüş
-            if self.camera_uri is not None:
-                try:
-                    Build = autoclass('android.os.Build$VERSION')
-                    if Build.SDK_INT >= 29:
-                        ContentValues = autoclass('android.content.ContentValues')
-                        Integer = autoclass('java.lang.Integer')
-                        values = ContentValues()
-                        values.put("is_pending", Integer(0))
-                        PythonActivity.mActivity.getContentResolver().update(self.camera_uri, values, None, None)
-                except:
-                    pass
-                
+        if request_code == 1001: # Kamera Dönüşü
+            if self.camera_file_path and os.path.exists(self.camera_file_path):
                 self.lbl_status.text = "Kamera görüntüsü işleniyor..."
-                threading.Thread(target=self.process_android_uri_query, args=(self.camera_uri,), daemon=True).start()
+                Clock.schedule_once(lambda dt: self.process_new_query(self.camera_file_path), 0)
+            else:
+                self.lbl_status.text = "Hata: Kamera resmi alınamadı."
 
-        elif request_code == 1002: # Galeriden Dönüş
-            if intent is not None:
-                uri = intent.getData()
-                if uri is not None:
-                    self.lbl_status.text = "Görsel yükleniyor..."
-                    threading.Thread(target=self.process_android_uri_query, args=(uri,), daemon=True).start()
+        elif request_code == 1002: # Galeri Dönüşü
+            if intent is not None and intent.getData() is not None:
+                self.lbl_status.text = "Görsel yükleniyor..."
+                threading.Thread(target=self.process_android_uri_query, args=(intent.getData(),), daemon=True).start()
                     
         elif request_code == 1003: # DB Çoklu Aktarım
             if intent is not None:
-                uris = []
+                uris_with_names = []
                 clip_data = intent.getClipData()
                 if clip_data is not None:
                     for i in range(clip_data.getItemCount()):
-                        uris.append(clip_data.getItemAt(i).getUri())
+                        uri = clip_data.getItemAt(i).getUri()
+                        uris_with_names.append((uri, self.get_uri_filename(uri)))
                 else:
                     uri = intent.getData()
                     if uri is not None:
-                        uris.append(uri)
+                        uris_with_names.append((uri, self.get_uri_filename(uri)))
                 
-                if uris:
-                    self.lbl_status.text = f"{len(uris)} görsel aktarılıyor..."
-                    threading.Thread(target=self.process_android_uris_bulk, args=(uris,), daemon=True).start()
+                if uris_with_names:
+                    self.lbl_status.text = f"{len(uris_with_names)} görsel orijinal adıyla aktarılıyor..."
+                    threading.Thread(target=self.process_android_uris_bulk, args=(uris_with_names,), daemon=True).start()
 
     def copy_uri_to_local_file(self, uri, dest_path):
         try:
             context = PythonActivity.mActivity
             content_resolver = context.getContentResolver()
             input_stream = content_resolver.openInputStream(uri)
-            
             FileOutputStream = autoclass('java.io.FileOutputStream')
             out_stream = FileOutputStream(dest_path)
             
-            Build = autoclass('android.os.Build$VERSION')
-            if Build.SDK_INT >= 29:
-                FileUtils = autoclass('android.os.FileUtils')
-                FileUtils.copy(input_stream, out_stream)
-            else:
-                BitmapFactory = autoclass('android.graphics.BitmapFactory')
-                CompressFormat = autoclass('android.graphics.Bitmap$CompressFormat')
-                bitmap = BitmapFactory.decodeStream(input_stream)
-                bitmap.compress(CompressFormat.JPEG, 100, out_stream)
+            # Güvenli byte tabanlı kopyalama
+            buffer = bytearray(4096)
+            while True:
+                bytes_read = input_stream.read(buffer)
+                if bytes_read == -1:
+                    break
+                out_stream.write(buffer, 0, bytes_read)
                 
             out_stream.flush()
             out_stream.close()
             input_stream.close()
             return True
         except Exception as e:
-            print(f"Dosya Kopyalama Hatası: {e}")
+            print(f"Kopyalama Hatası: {e}")
             return False
 
     def process_android_uri_query(self, uri):
@@ -259,14 +239,13 @@ class GasketMatcherMobile(BoxLayout):
         else:
             self.update_status_from_thread("Hata: Görsel kopyalanamadı.")
 
-    def process_android_uris_bulk(self, uris):
+    def process_android_uris_bulk(self, uris_with_names):
         count = 0
-        for i, uri in enumerate(uris):
-            filename = f"gasket_{int(time.time())}_{i}.jpg"
-            dest_path = os.path.join(self.db_folder, filename)
+        for uri, orig_name in uris_with_names:
+            dest_path = os.path.join(self.db_folder, orig_name)
             if self.copy_uri_to_local_file(uri, dest_path):
                 count += 1
-        self.update_status_from_thread(f"Başarılı! {count} görsel eklendi. Toplam: {len(os.listdir(self.db_folder))}")
+        self.update_status_from_thread(f"Başarılı! {count} adet orijinal isimli conta eklendi.\nToplam DB: {len(os.listdir(self.db_folder))}")
 
     def show_clear_db_popup(self, instance):
         content = BoxLayout(orientation='vertical', padding=15, spacing=15)
@@ -292,33 +271,65 @@ class GasketMatcherMobile(BoxLayout):
         self.query_image_path = path
         self.img_query.source = path
         self.img_query.reload()
-        self.lbl_status.text = "Gelişmiş detaylar taranıyor..."
+        self.lbl_status.text = "Geometri analiz ediliyor..."
         threading.Thread(target=self.find_best_match, daemon=True).start()
 
     def load_image_with_orientation(self, img_path):
         img = cv2.imread(img_path)
         if img is None: 
             return None
-            
         if platform == 'android':
             try:
                 ExifInterface = autoclass('android.media.ExifInterface')
                 exif = ExifInterface(img_path)
                 orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-                
                 if orientation == ExifInterface.ORIENTATION_ROTATE_90:
                     img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
                 elif orientation == ExifInterface.ORIENTATION_ROTATE_180:
                     img = cv2.rotate(img, cv2.ROTATE_180)
                 elif orientation == ExifInterface.ORIENTATION_ROTATE_270:
                     img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            except Exception as e:
-                print(f"EXIF Oryantasyon hatası es geçildi: {e}")
-                
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        return gray
+            except:
+                pass
+        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # --- YENİ NESİL ARKA PLAN BAĞIMSIZ ORB ÖZELLİK EŞLEŞTİRME MOTORU ---
+    def extract_gasket_contour(self, img_gray):
+        """Masa damarlarını silen ve contanın dış kalıbını bulan akıllı ön işlemci"""
+        blurred = cv2.GaussianBlur(img_gray, (7, 7), 0)
+        
+        # Farklı ışık koşulları için çift katmanlı Otsu eşikleme dene
+        _, thresh1 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        _, thresh2 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        best_contour = None
+        max_area = 0
+        img_area = img_gray.shape[0] * img_gray.shape[1]
+        
+        for thresh in [thresh1, thresh2]:
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for c in contours:
+                area = cv2.contourArea(c)
+                # Fotoğrafta mantıklı büyüklükteki (%5 ile %93 arası) ana nesneyi seç
+                if 0.05 * img_area < area < 0.93 * img_area:
+                    if area > max_area:
+                        max_area = area
+                        best_contour = c
+                        
+        # Eğer arka plan çok karmaşıksa Canny Kenar Filtresine başvur
+        if best_contour is None:
+            edged = cv2.Canny(blurred, 30, 130)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            closed = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, kernel)
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for c in contours:
+                area = cv2.contourArea(c)
+                if 0.05 * img_area < area < 0.93 * img_area:
+                    if area > max_area:
+                        max_area = area
+                        best_contour = c
+        return best_contour
+
+    # --- GEOMETRİK HU-MOMENTS KONTUR EŞLEŞTİRME MOTORU (PC DOĞRULUĞUNDA) ---
     def find_best_match(self):
         db_files = [f for f in os.listdir(self.db_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
         if not db_files:
@@ -330,15 +341,11 @@ class GasketMatcherMobile(BoxLayout):
             self.update_status_from_thread("Hata: Aranan resim yüklenemedi.")
             return
 
-        # ORB Tanımlayıcısı oluştur (Arka planı süzüp sadece contaya odaklanır)
-        orb = cv2.ORB_create(nfeatures=1000)
-        kp_query, des_query = orb.detectAndCompute(query_img, None)
-        
-        if des_query is None:
-            self.update_status_from_thread("Hata: Fotoğrafta belirgin conta detayı bulunamadı.")
+        c_query = self.extract_gasket_contour(query_img)
+        if c_query is None:
+            self.update_status_from_thread("Hata: Fotoğrafta net bir conta sınırı tespit edilemedi.")
             return
 
-        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         results = []
         total_files = len(db_files)
         
@@ -348,27 +355,25 @@ class GasketMatcherMobile(BoxLayout):
             if db_img is None: 
                 continue
                 
-            kp_db, des_db = orb.detectAndCompute(db_img, None)
-            if des_db is None: 
-                continue
-
-            # Özellik haritalarını eşleştir
-            matches = bf.match(des_query, des_db)
-            matches = sorted(matches, key=lambda x: x.distance)
-
-            # Sadece güçlü geometrik benzerlikleri filtrele (Mesafe eşiği: 48)
-            good_matches = [m for m in matches if m.distance < 48]
-            score = len(good_matches)
+            # Veritabanı resimleri temiz şablon olduğu için hızlıca kontur alıyoruz
+            _, db_thresh = cv2.threshold(db_img, 15, 255, cv2.THRESH_BINARY)
+            db_contours, _ = cv2.findContours(db_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
+            if not db_contours: 
+                continue
+            c_db = max(db_contours, key=cv2.contourArea)
+
+            # Döndürme, ölçek ve kaymadan etkilenmeyen Hu Moments Şekil Eşleştirmesi (PC Mantığı)
+            score = cv2.matchShapes(c_query, c_db, cv2.CONTOUR_MATCH_I1, 0)
             results.append((db_path, score))
             
-            if idx % 4 == 0 or idx == total_files - 1:
+            if idx % 5 == 0 or idx == total_files - 1:
                 progress = ((idx + 1) / total_files) * 100
-                self.update_status_from_thread(f"Eşleştiriliyor... %{progress:.1f}")
+                self.update_status_from_thread(f"Geometrik analiz yapılıyor... %{progress:.1f}")
                         
-        results.sort(key=lambda x: x[1], reverse=True)
-        # Minimum eşleşme nokta sayısı barajı (Gürültüleri engellemek için)
-        filtered_results = [r for r in results if r[1] >= 8]
+        # Skor 0.0'a ne kadar yakınsa o kadar mükemmel eşleşmedir. Küçükten büyüğe sırala.
+        results.sort(key=lambda x: x[1])
+        filtered_results = [r for r in results if r[1] < 1.8]
         
         if filtered_results:
             self.match_results = filtered_results
@@ -381,22 +386,22 @@ class GasketMatcherMobile(BoxLayout):
     def set_no_match_ui(self):
         self.img_match.source = ''
         self.img_match.reload()
-        self.lbl_status.text = "Sistemde benzer geometride conta bulunamadı."
+        self.lbl_status.text = "Sistemde benzer dış geometriye sahip conta bulunamadı."
         self.lbl_index.text = "Sonuç: 0 / 0"
 
     def update_result_display(self):
         if not self.match_results:
             return
             
-        file_path, match_count = self.match_results[self.current_result_index]
-        # Gerçekçi ve kararlı bir doğruluk yüzdesi hesabı
-        confidence = min(100.0, (match_count / 25.0) * 100)
+        file_path, score = self.match_results[self.current_result_index]
+        # Skoru anlaşılır bir yüzdeye dönüştür (0.0 skor = %100 uyum)
+        confidence = max(0.0, min(100.0, (1.0 - score) * 100))
         
         self.img_match.source = file_path
         self.img_match.reload()
         
         code_name = os.path.basename(file_path)
-        self.lbl_status.text = f"Sonuç {self.current_result_index + 1}: {code_name}\nEşleşen Nokta: {match_count} (Güven Skoru: %{confidence:.1f})"
+        self.lbl_status.text = f"Sonuç {self.current_result_index + 1}: {code_name}\nGeometrik Hata Puanı: {score:.3f} (Uyum: %{confidence:.1f})"
         self.lbl_index.text = f"Sonuç: {self.current_result_index + 1} / {len(self.match_results)}"
 
     def show_prev_result(self, instance):
