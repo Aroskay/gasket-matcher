@@ -1,5 +1,11 @@
 [app]
 
+# AndroidX desteğini zorunlu kılın
+android.enable_androidx = True
+
+# NDK sürümünü sabitleyin (build hatalarını azaltır)
+android.ndk = 26b
+
 # (str) Uygulama Başlığı
 title = Gasket Matcher
 
@@ -37,9 +43,6 @@ android.api = 33
 # (int) Minimum API Seviyesi (NumPy kütüphanesi için en az 24 olmalıdır)
 android.minapi = 24
 
-# (str) Android NDK Sürümü
-
-
 # C++ paylaşımlı kütüphane çakışmalarını engellemek için STL yapısı zorunlu kılınıyor
 android.ndk_stl = c++_shared
 
@@ -51,7 +54,7 @@ android.archs = arm64-v8a, armeabi-v7a
 # =============================================================================
 # (list) Android Gradle bağımlılıkları
 # Hataya sebep olan 'androidx.documentfile:documentfile:1.0.1' kütüphanesini açıkça ekledik.
-android.gradle_dependencies = androidx.documentfile:documentfile:1.0.1, androidx.core:core:1.6.0
+android.gradle_dependencies = 'androidx.documentfile:documentfile:1.0.1', 'androidx.core:core:1.6.0'
 
 # (bool) Android yedekleme izni
 android.allow_backup = True
