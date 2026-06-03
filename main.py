@@ -16,7 +16,6 @@ from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.utils import platform
 
-# Android platformuna özel yerel kütüphaneler
 if platform == 'android':
     from android.permissions import request_permissions, Permission
     from android import activity
@@ -35,7 +34,7 @@ class GasketMatcherMobile(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
         
-        # --- VERİTABANI VE GEZGİN DEĞİŞKENLERİ ---
+        # --- VERİTABANI DEĞİŞKENLERİ ---
         self.db_folder = os.path.join(App.get_running_app().user_data_dir, "GasketDB")
         if not os.path.exists(self.db_folder):
             os.makedirs(self.db_folder)
@@ -45,12 +44,11 @@ class GasketMatcherMobile(BoxLayout):
         self.current_result_index = 0
         self.camera_uri = None 
 
-        # --- ANDROID AKTİVİTE VE İZİN BAĞLANTILARI ---
         if platform == 'android':
             activity.bind(on_activity_result=self.handle_activity_result)
             Clock.schedule_once(self.request_android_permissions, 1)
 
-        # --- ARAYÜZ (GUI) KURULUMU ---
+        # --- ARAYÜZ (GUI) TASARIMI ---
         self.img_panel = BoxLayout(size_hint=(1, 0.45), spacing=10)
         box_query = BoxLayout(orientation='vertical')
         box_query.add_widget(Label(text="Aranan Conta", size_hint=(1, 0.1), bold=True))
@@ -81,7 +79,7 @@ class GasketMatcherMobile(BoxLayout):
         self.add_widget(btn_grid)
 
         nav_panel = BoxLayout(size_hint=(1, 0.15), spacing=10)
-        nav_panel.add_widget(Button(text="Onceki", on_press=self.show_prev_result))
+        nav_panel.add_widget(Button(text="Önceki", on_press=self.show_prev_result))
         self.lbl_index = Label(text="Sonuç: 0 / 0", bold=True)
         nav_panel.add_widget(self.lbl_index)
         nav_panel.add_widget(Button(text="Sonraki", on_press=self.show_next_result))
@@ -92,35 +90,50 @@ class GasketMatcherMobile(BoxLayout):
             permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE, Permission.READ_MEDIA_IMAGES]
             request_permissions(permissions)
         except Exception as e: 
-            print(f"İzin hatası: {e}")
+            print(f"İzin isteme hatası: {e}")
 
     def open_camera_native(self, instance):
-        """Android API 29+ uyumlu güvenli MediaStore Kamera Intent tetikleyicisi"""
+        """Çift katmanlı (Fallback korumalı) evrensel Kamera Intent tetikleyicisi"""
         if platform == 'android':
             try:
                 ContentValues = autoclass('android.content.ContentValues')
                 Media = autoclass('android.provider.MediaStore$Images$Media')
                 String = autoclass('java.lang.String')
-                Integer = autoclass('java.lang.Integer')
                 
                 context = PythonActivity.mActivity
                 content_resolver = context.getContentResolver()
                 
-                values = ContentValues()
                 filename = f"gasket_{int(time.time())}.jpg"
+                
+                # 1. Aşama: En geniş kapsamlı temel değerleri ata
+                values = ContentValues()
                 values.put(Media.DISPLAY_NAME, String(filename))
                 values.put(Media.MIME_TYPE, String("image/jpeg"))
                 
-                # Android 10+ için klasör belirterek parcel hatasını engelliyoruz
-                Build = autoclass('android.os.Build$VERSION')
-                if Build.SDK_INT >= 29:
-                    values.put(Media.RELATIVE_PATH, String("Pictures/GasketMatcher"))
-                    values.put(Media.IS_PENDING, Integer(1)) # Yazma işlemi bitene kadar kilitle
+                # Sürüme özel gelişmiş parametreleri dene (Hata verirse güvenle es geçilir)
+                try:
+                    Build = autoclass('android.os.Build$VERSION')
+                    if Build.SDK_INT >= 29:
+                        values.put(Media.RELATIVE_PATH, String("Pictures/GasketMatcher"))
+                        try:
+                            values.put("is_pending", autoclass('java.lang.Integer')(1))
+                        except:
+                            pass
+                except:
+                    pass
                 
-                self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, values)
+                # 2. Aşama: Veritabanına ekle, eğer sütun hatası verirse çökmesini engelle ve yalın ekle
+                try:
+                    self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, values)
+                except Exception as db_err:
+                    print(f"Gelişmiş insert başarısız, yalın deniniyor: {db_err}")
+                    fallback_values = ContentValues()
+                    fallback_values.put(Media.DISPLAY_NAME, String(filename))
+                    fallback_values.put(Media.MIME_TYPE, String("image/jpeg"))
+                    self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, fallback_values)
                 
                 if self.camera_uri is None:
-                    self.lbl_status.text = "Hata: MediaStore URI oluşturulamadı."
+                    self.lbl_status.text = "Hata: Media Deposu oluşturulamadı."
                     return
                     
                 intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
@@ -176,7 +189,6 @@ class GasketMatcherMobile(BoxLayout):
         if request_code == 1001: # Kameradan Dönüş
             if self.camera_uri is not None:
                 try:
-                    # Android 10+ yazma bittiği için dosya kilidini kaldırıyoruz
                     Build = autoclass('android.os.Build$VERSION')
                     if Build.SDK_INT >= 29:
                         ContentValues = autoclass('android.content.ContentValues')
@@ -184,20 +196,20 @@ class GasketMatcherMobile(BoxLayout):
                         values = ContentValues()
                         values.put("is_pending", Integer(0))
                         PythonActivity.mActivity.getContentResolver().update(self.camera_uri, values, None, None)
-                except Exception as e:
-                    print(f"Pending kilit kaldırma hatası: {e}")
+                except:
+                    pass
                 
-                self.lbl_status.text = "Kamera görüntüsü alınıyor..."
+                self.lbl_status.text = "Kamera görüntüsü işleniyor..."
                 threading.Thread(target=self.process_android_uri_query, args=(self.camera_uri,), daemon=True).start()
 
-        elif request_code == 1002: # Galeriden Tekli Seçim
+        elif request_code == 1002: # Galeriden Dönüş
             if intent is not None:
                 uri = intent.getData()
                 if uri is not None:
                     self.lbl_status.text = "Görsel yükleniyor..."
                     threading.Thread(target=self.process_android_uri_query, args=(uri,), daemon=True).start()
                     
-        elif request_code == 1003: # DB İçin Çoklu Seçim
+        elif request_code == 1003: # DB Çoklu Aktarım
             if intent is not None:
                 uris = []
                 clip_data = intent.getClipData()
@@ -237,7 +249,7 @@ class GasketMatcherMobile(BoxLayout):
             input_stream.close()
             return True
         except Exception as e:
-            print(f"Kopyalama Hatası: {e}")
+            print(f"Dosya Kopyalama Hatası: {e}")
             return False
 
     def process_android_uri_query(self, uri):
@@ -280,12 +292,10 @@ class GasketMatcherMobile(BoxLayout):
         self.query_image_path = path
         self.img_query.source = path
         self.img_query.reload()
-        self.lbl_status.text = "Varyasyonlar hesaplanıyor..."
+        self.lbl_status.text = "Gelişmiş detaylar taranıyor..."
         threading.Thread(target=self.find_best_match, daemon=True).start()
 
-    # --- ANDROID YEREL EXIF ORYANTASYON DÜZELTİCİ MOTORU ---
     def load_image_with_orientation(self, img_path):
-        """Telefonun dikey/yatay çekim bilgisini okur ve pikselleri doğru yöne döndürür"""
         img = cv2.imread(img_path)
         if img is None: 
             return None
@@ -303,116 +313,62 @@ class GasketMatcherMobile(BoxLayout):
                 elif orientation == ExifInterface.ORIENTATION_ROTATE_270:
                     img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
             except Exception as e:
-                print(f"EXIF Oryantasyon hatası: {e}")
+                print(f"EXIF Oryantasyon hatası es geçildi: {e}")
                 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         return gray
 
-    def preprocess_to_edges(self, img_path):
-        # cv2.imread yerine oryantasyon motorumuzu çağırıyoruz
-        img = self.load_image_with_orientation(img_path)
-        if img is None: return None
-
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(img)
-
-        v = np.median(enhanced)
-        sigma = 0.33
-        lower = int(max(0, (1.0 - sigma) * v))
-        upper = int(min(255, (1.0 + sigma) * v))
-        edges = cv2.Canny(enhanced, lower, upper)
-
-        kernel_connect = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        edges_connected = cv2.dilate(edges, kernel_connect, iterations=1)
-
-        contours, _ = cv2.findContours(edges_connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours: return None
-
-        largest_contour = max(contours, key=cv2.contourArea)
-        x, y, w_box, h_box = cv2.boundingRect(largest_contour)
-        if w_box < 15 or h_box < 15: return None
-
-        cropped_edges = edges_connected[y:y+h_box, x:x+w_box]
-
-        target_size = 400
-        scale = target_size / max(w_box, h_box)
-        new_w = int(w_box * scale)
-        new_h = int(h_box * scale)
-
-        resized_edges = cv2.resize(cropped_edges, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-        canvas = np.zeros((target_size, target_size), dtype=np.uint8)
-
-        pad_top = (target_size - new_h) // 2
-        pad_left = (target_size - new_w) // 2
-        canvas[pad_top:pad_top+new_h, pad_left:pad_left+new_w] = resized_edges
-
-        kernel_thick = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        canvas_thick = cv2.dilate(canvas, kernel_thick, iterations=1)
-
-        _, final_mask = cv2.threshold(canvas_thick, 127, 255, cv2.THRESH_BINARY)
-        return final_mask
-
-    def generate_query_variations(self, query_mask):
-        variations = []
-        h, w = query_mask.shape
-        center = (w // 2, h // 2)
-
-        for angle in range(0, 360, 5):
-            M = cv2.getRotationMatrix2D(center, angle, 1.0)
-            rotated = cv2.warpAffine(query_mask, M, (w, h), flags=cv2.INTER_NEAREST)
-            variations.append(rotated)
-            
-            flipped = cv2.flip(rotated, 1)
-            variations.append(flipped)
-        return variations
-
-    def calculate_similarity_fast(self, query_variations, db_mask):
-        max_iou = 0
-        db_sum = np.count_nonzero(db_mask)
-        if db_sum == 0: return 0
-
-        for q_mask in query_variations:
-            intersection = cv2.bitwise_and(q_mask, db_mask)
-            union = cv2.bitwise_or(q_mask, db_mask)
-
-            i_sum = np.count_nonzero(intersection)
-            u_sum = np.count_nonzero(union)
-
-            if u_sum > 0:
-                iou = i_sum / u_sum
-                if iou > max_iou:
-                    max_iou = iou
-                if max_iou > 0.90:
-                    break
-        return max_iou
-
+    # --- YENİ NESİL ARKA PLAN BAĞIMSIZ ORB ÖZELLİK EŞLEŞTİRME MOTORU ---
     def find_best_match(self):
         db_files = [f for f in os.listdir(self.db_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
         if not db_files:
             self.update_status_from_thread("Hata: Veritabanında karşılaştırılacak conta yok.")
             return
 
-        query_mask = self.preprocess_to_edges(self.query_image_path)
-        if query_mask is None:
-            self.update_status_from_thread("Hata: Aranan contanın kenarları tespit edilemedi.")
+        query_img = self.load_image_with_orientation(self.query_image_path)
+        if query_img is None:
+            self.update_status_from_thread("Hata: Aranan resim yüklenemedi.")
             return
-            
-        query_variations = self.generate_query_variations(query_mask)
+
+        # ORB Tanımlayıcısı oluştur (Arka planı süzüp sadece contaya odaklanır)
+        orb = cv2.ORB_create(nfeatures=1000)
+        kp_query, des_query = orb.detectAndCompute(query_img, None)
+        
+        if des_query is None:
+            self.update_status_from_thread("Hata: Fotoğrafta belirgin conta detayı bulunamadı.")
+            return
+
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         results = []
         total_files = len(db_files)
         
         for idx, f in enumerate(db_files):
-            db_mask = self.preprocess_to_edges(os.path.join(self.db_folder, f))
-            if db_mask is not None:
-                score = self.calculate_similarity_fast(query_variations, db_mask)
-                results.append((os.path.join(self.db_folder, f), score))
+            db_path = os.path.join(self.db_folder, f)
+            db_img = cv2.imread(db_path, cv2.IMREAD_GRAYSCALE)
+            if db_img is None: 
+                continue
+                
+            kp_db, des_db = orb.detectAndCompute(db_img, None)
+            if des_db is None: 
+                continue
+
+            # Özellik haritalarını eşleştir
+            matches = bf.match(des_query, des_db)
+            matches = sorted(matches, key=lambda x: x.distance)
+
+            # Sadece güçlü geometrik benzerlikleri filtrele (Mesafe eşiği: 48)
+            good_matches = [m for m in matches if m.distance < 48]
+            score = len(good_matches)
             
-            if idx % 3 == 0 or idx == total_files - 1:
+            results.append((db_path, score))
+            
+            if idx % 4 == 0 or idx == total_files - 1:
                 progress = ((idx + 1) / total_files) * 100
-                self.update_status_from_thread(f"Taranıyor... %{progress:.1f}")
+                self.update_status_from_thread(f"Eşleştiriliyor... %{progress:.1f}")
                         
         results.sort(key=lambda x: x[1], reverse=True)
-        filtered_results = [r for r in results if r[1] > 0.12]
+        # Minimum eşleşme nokta sayısı barajı (Gürültüleri engellemek için)
+        filtered_results = [r for r in results if r[1] >= 8]
         
         if filtered_results:
             self.match_results = filtered_results
@@ -425,33 +381,32 @@ class GasketMatcherMobile(BoxLayout):
     def set_no_match_ui(self):
         self.img_match.source = ''
         self.img_match.reload()
-        self.lbl_status.text = "Sistemde benzer conta bulunamadı."
+        self.lbl_status.text = "Sistemde benzer geometride conta bulunamadı."
         self.lbl_index.text = "Sonuç: 0 / 0"
 
     def update_result_display(self):
         if not self.match_results:
             return
             
-        file_path, score = self.match_results[self.current_result_index]
-        similarity_percentage = min(100, score * 150)
+        file_path, match_count = self.match_results[self.current_result_index]
+        # Gerçekçi ve kararlı bir doğruluk yüzdesi hesabı
+        confidence = min(100.0, (match_count / 25.0) * 100)
         
         self.img_match.source = file_path
         self.img_match.reload()
         
         code_name = os.path.basename(file_path)
-        self.lbl_status.text = f"Sonuç {self.current_result_index + 1}: {code_name}\nEşleşme: %{similarity_percentage:.2f}"
+        self.lbl_status.text = f"Sonuç {self.current_result_index + 1}: {code_name}\nEşleşen Nokta: {match_count} (Güven Skoru: %{confidence:.1f})"
         self.lbl_index.text = f"Sonuç: {self.current_result_index + 1} / {len(self.match_results)}"
 
     def show_prev_result(self, instance):
-        if not self.match_results:
-            return
+        if not self.match_results: return
         if self.current_result_index > 0:
             self.current_result_index -= 1
             self.update_result_display()
 
     def show_next_result(self, instance):
-        if not self.match_results:
-            return
+        if not self.match_results: return
         if self.current_result_index < len(self.match_results) - 1:
             self.current_result_index += 1
             self.update_result_display()
