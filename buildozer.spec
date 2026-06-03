@@ -39,10 +39,10 @@ android.minapi = 24
 
 # (str) Android NDK Sürümü
 # Google sunucularından 404 hatası almamak için resmi kararlı sürüm yazıldı.
-android.ndk = 26b
+android.ndk = 27.3.13750724
 
 # (int) NDK API Seviyesi
-android.ndk_api = 24
+android.ndk_api = 33
 
 # C++ paylaşımlı kütüphane çakışmalarını engellemek için STL yapısı zorunlu kılınıyor
 android.ndk_stl = c++_shared
