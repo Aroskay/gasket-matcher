@@ -131,19 +131,27 @@ class GasketMatcherMobile(BoxLayout):
         
         self.add_widget(nav_panel)
 
-    def request_android_permissions(self, dt):
+         def request_android_permissions(self, dt):
         try:
-            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE]
+            from android.permissions import request_permissions, Permission
+            
+            # Standart izinler (Eski Android sürümleri için)
+            permissions = [Permission.CAMERA]
+            
+            # Android 13 (API 33) ve üzeri için yeni medya izinleri kontrolü
+            # Eğer cihaz yeniyse direkt nokta atışı görsel okuma izni ister
+            try:
+                READ_MEDIA_IMAGES = Permission.READ_MEDIA_IMAGES
+                permissions.append(READ_MEDIA_IMAGES)
+            except AttributeError:
+                # Eski cihazlar için standart depolama izinleri
+                permissions.append(Permission.READ_EXTERNAL_STORAGE)
+                permissions.append(Permission.WRITE_EXTERNAL_STORAGE)
+                
             request_permissions(permissions)
-
-            if not Environment.isExternalStorageManager():
-                intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                activity = PythonActivity.mActivity
-                uri = Uri.fromParts("package", activity.getPackageName(), None)
-                intent.setData(uri)
-                activity.startActivity(intent)
         except Exception as e:
             print(f"İzin operates hatası: {e}")
+
 
     # ==========================================
     # ANDROID MODERN INTERACTION METHODS
