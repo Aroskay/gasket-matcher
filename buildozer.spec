@@ -63,4 +63,6 @@ android.allow_backup = True
 [buildozer]
 # (int) Log seviyesi (Hataları detaylı görmek için en yüksek seviye olan 2 yapıldı)
 log_level = 2
+# (int) Ccache kullanımı (1: Aktif, 0: Pasif)
+ccache = 1
 warn_on_root = 1
