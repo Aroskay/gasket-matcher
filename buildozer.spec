@@ -24,8 +24,9 @@ requirements = python3, kivy, opencv, numpy, pyjnius, android
 orientation = portrait
 fullscreen = 0
 
-# (list) Android İzinleri (Kamera ve Depolama izinleri)
-android.permissions = CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
+# (list) Android İzinleri - Yeni Android sürümleri için medya izinleri eklendi
+
+android.permissions = CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, READ_MEDIA_IMAGES, READ_MEDIA_VIDEO
 
 # =============================================================================
 # 🚨 GİTHUB ACTIONS SUNUCU VE SÜRÜM UYUMLULUK AYARLARI
