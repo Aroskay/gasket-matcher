@@ -25,10 +25,6 @@ if platform == 'android':
     Intent = autoclass('android.content.Intent')
     Uri = autoclass('android.net.Uri')
     MediaStore = autoclass('android.provider.MediaStore')
-    File = autoclass('java.io.File')
-    
-    StrictMode = autoclass('android.os.StrictMode')
-    StrictMode.setThreadPolicy(StrictMode.ThreadPolicy.Builder().permitAll().build())
 else:
     from plyer import filechooser
 
@@ -45,13 +41,13 @@ class GasketMatcherMobile(BoxLayout):
         self.query_image_path = None
         self.match_results = []
         self.current_result_index = 0
-        self.camera_file_path = None
+        self.camera_uri = None
 
         if platform == 'android':
             activity.bind(on_activity_result=self.handle_activity_result)
             Clock.schedule_once(self.request_android_permissions, 1)
 
-        # --- ARAYÜZ ---
+        # --- ARAYÜZ (GUI) TASARIMI ---
         self.img_panel = BoxLayout(size_hint=(1, 0.45), spacing=10)
         box_query = BoxLayout(orientation='vertical')
         box_query.add_widget(Label(text="Aranan Conta", size_hint=(1, 0.1), bold=True))
@@ -112,10 +108,10 @@ class GasketMatcherMobile(BoxLayout):
             try:
                 context = PythonActivity.mActivity
                 content_resolver = context.getContentResolver()
-                MediaColumns = autoclass('android.provider.MediaStore$MediaColumns')
+                OpenableColumns = autoclass('android.provider.OpenableColumns')
                 cursor = content_resolver.query(uri, None, None, None, None)
                 if cursor is not None and cursor.moveToFirst():
-                    name_index = cursor.getColumnIndex(MediaColumns.DISPLAY_NAME)
+                    name_index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     filename = cursor.getString(name_index)
                     cursor.close()
                     return filename
@@ -126,18 +122,25 @@ class GasketMatcherMobile(BoxLayout):
     def open_camera_native(self, instance):
         if platform == 'android':
             try:
+                ContentValues = autoclass('android.content.ContentValues')
+                Media = autoclass('android.provider.MediaStore$Images$Media')
+                String = autoclass('java.lang.String')
+                
                 context = PythonActivity.mActivity
-                ext_dir = context.getExternalFilesDir(None).getAbsolutePath()
-                self.camera_file_path = os.path.join(ext_dir, "camera_query.jpg")
+                content_resolver = context.getContentResolver()
                 
-                if os.path.exists(self.camera_file_path):
-                    os.remove(self.camera_file_path)
+                filename = f"gasket_{int(time.time())}.jpg"
+                values = ContentValues()
+                values.put(Media.DISPLAY_NAME, String(filename))
+                values.put(Media.MIME_TYPE, String("image/jpeg"))
+                
+                self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, values)
+                if self.camera_uri is None:
+                    self.lbl_status.text = "Hata: Depolama alanı oluşturulamadı."
+                    return
                     
-                image_file = File(self.camera_file_path)
-                camera_uri = Uri.fromFile(image_file)
-                
                 intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                intent.putExtra(MediaStore.EXTRA_OUTPUT, camera_uri)
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, self.camera_uri)
                 PythonActivity.mActivity.startActivityForResult(intent, 1001)
             except Exception as e:
                 self.lbl_status.text = f"Kamera Başlatılamadı:\n{str(e)}"
@@ -184,10 +187,9 @@ class GasketMatcherMobile(BoxLayout):
             return
         
         if request_code == 1001: 
-            if self.camera_file_path and os.path.exists(self.camera_file_path):
-                self.process_new_query(self.camera_file_path)
-            else:
-                self.lbl_status.text = "Hata: Kamera resmi hafızaya yazamadı."
+            if self.camera_uri is not None:
+                self.lbl_status.text = "Görsel işleniyor..."
+                threading.Thread(target=self.process_android_uri_query, args=(self.camera_uri,), daemon=True).start()
 
         elif request_code == 1002: 
             if intent is not None and intent.getData() is not None:
@@ -243,8 +245,6 @@ class GasketMatcherMobile(BoxLayout):
             last_prog = -1
             for idx, (uri, orig_name) in enumerate(uris_with_names):
                 if self.copy_uri_to_local_file(uri, temp_path):
-                    # PC'de fotolar olduğu gibi kalıyordu ancak telefonda RAM aşımı olmaması için
-                    # görsel kalitesini düşürmeden en fazla 1000px olarak DB'ye atıyoruz.
                     img = self.robust_imread(temp_path)
                     if img is not None:
                         max_dim = 1000
@@ -290,7 +290,6 @@ class GasketMatcherMobile(BoxLayout):
         threading.Thread(target=self.find_best_match_worker, daemon=True).start()
 
     def get_orientation_fixed_image(self, img_path):
-        """Kameradan gelen yan veya ters dönmüş resmi düzeltir"""
         img = self.robust_imread(img_path, is_gray=True)
         if img is None: return None
         if platform == 'android':
@@ -304,7 +303,7 @@ class GasketMatcherMobile(BoxLayout):
             except: pass
         return img
 
-    # --- PC'DEKİ MÜKEMMEL KENAR KESME VE MASKE ÇIKARTMA MOTORU ---
+    # --- PC'DEKİ GEOMETRİK MASKE ÇIKARTMA MOTORU ---
     def preprocess_to_edges(self, img_gray):
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(img_gray)
@@ -325,10 +324,10 @@ class GasketMatcherMobile(BoxLayout):
         x, y, w_box, h_box = cv2.boundingRect(largest_contour)
         if w_box < 15 or h_box < 15: return None
 
-        # Sadece contayı kırpıp alıyoruz, masayı atıyoruz
+        # Sadece contayı kırpıyoruz
         cropped_edges = edges_connected[y:y+h_box, x:x+w_box]
 
-        # Her contayı 400x400 standart bir kanvasa eşitliyoruz
+        # 400x400 Standart Kare Kanvasa Eşitleme
         target_size = 400
         scale = target_size / max(w_box, h_box)
         new_w = int(w_box * scale)
@@ -341,16 +340,15 @@ class GasketMatcherMobile(BoxLayout):
         pad_left = (target_size - new_w) // 2
         canvas[pad_top:pad_top+new_h, pad_left:pad_left+new_w] = resized_edges
 
-        # PC'deki kalınlaştırma mantığı (kaymaları affetmesi için)
+        # PC Kalınlaştırma (Hataları tolere etmek için)
         kernel_thick = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         canvas_thick = cv2.dilate(canvas, kernel_thick, iterations=1)
         _, final_mask = cv2.threshold(canvas_thick, 127, 255, cv2.THRESH_BINARY)
         
         return final_mask
 
-    # --- PC'DEKİ 144 VARYASYON ÜRETİCİSİ ---
+    # --- PC'DEKİ 360 DERECE (144 VARYASYON) MOTORU ---
     def generate_query_variations(self, query_mask):
-        """Aranan contayı her 5 derecede bir çevirip ayna görüntülerini hesaplar"""
         variations = []
         h, w = query_mask.shape
         center = (w // 2, h // 2)
@@ -365,7 +363,7 @@ class GasketMatcherMobile(BoxLayout):
             
         return variations
 
-    # --- HIZLI IoU HESAPLAYICISI (BİREBİR PC MANTIĞI) ---
+    # --- IoU ÇAKIŞTIRMA HESAPLAYICISI ---
     def calculate_similarity_fast(self, query_variations, db_mask):
         max_iou = 0
         db_sum = np.count_nonzero(db_mask)
@@ -382,8 +380,7 @@ class GasketMatcherMobile(BoxLayout):
                 iou = i_sum / u_sum
                 if iou > max_iou:
                     max_iou = iou
-                # Eğer çok yüksek eşleşme bulduysa hızlanmak için döngüyü kır
-                if max_iou > 0.90:
+                if max_iou > 0.85:
                     break
         return max_iou
 
@@ -400,7 +397,6 @@ class GasketMatcherMobile(BoxLayout):
                 self.update_status_from_thread("Hata: Resim okunamadı.")
                 return
 
-            # Arayüze donmaması için 500px küçük bir versiyon kaydedip gönderiyoruz
             display_path = os.path.join(App.get_running_app().user_data_dir, "display_query.jpg")
             max_dim = 500
             h, w = img_gray.shape[:2]
@@ -412,10 +408,9 @@ class GasketMatcherMobile(BoxLayout):
             cv2.imwrite(display_path, img_display)
             Clock.schedule_once(lambda dt: self.update_query_ui(display_path), 0)
 
-            # PC'deki gibi Maske Çıkarma
             query_mask = self.preprocess_to_edges(img_gray)
             if query_mask is None:
-                self.update_status_from_thread("Hata: Fotoğrafta net bir conta şekli bulunamadı.")
+                self.update_status_from_thread("Hata: Net bir conta şekli algılanamadı.")
                 return
 
             self.update_status_from_thread("[Adım 2/3] 360 Derece Açı Varyasyonları Çıkarılıyor...")
@@ -431,7 +426,6 @@ class GasketMatcherMobile(BoxLayout):
                 if progress % 5 == 0 and progress != last_progress:
                     self.update_status_from_thread(f"Eşleştiriliyor: %{progress} ({idx+1}/{total_files})")
                     last_progress = progress
-                    time.sleep(0.01)
 
                 db_path = os.path.join(self.db_folder, f)
                 db_img = self.robust_imread(db_path, is_gray=True)
@@ -443,10 +437,7 @@ class GasketMatcherMobile(BoxLayout):
                 score = self.calculate_similarity_fast(query_variations, db_mask)
                 results.append((db_path, score))
 
-            # Sonuçları en yüksek orana göre sırala
             results.sort(key=lambda x: x[1], reverse=True)
-            
-            # PC'deki baraj (0.12)
             filtered_results = [r for r in results if r[1] > 0.12]
 
             if filtered_results:
@@ -474,7 +465,6 @@ class GasketMatcherMobile(BoxLayout):
         if not self.match_results: return
         file_path, score = self.match_results[self.current_result_index]
         
-        # PC'deki katsayı (x 150)
         similarity_percentage = min(100.0, score * 150)
         
         self.img_match.source = file_path
