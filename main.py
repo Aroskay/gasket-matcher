@@ -20,7 +20,8 @@ from kivy.utils import platform
 if platform == 'android':
     from android.permissions import request_permissions, Permission
     from android import activity
-    from jnius import autoclass, cast, ByteArray
+    # DİKKAT: ByteArray içe aktarması (ImportError) çökme yaptığı için kaldırıldı!
+    from jnius import autoclass, cast
     
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
     Intent = autoclass('android.content.Intent')
@@ -43,7 +44,6 @@ class GasketMatcherMobile(BoxLayout):
 
         # --- ANDROID AKTİVİTE VE İZİN BAĞLANTILARI ---
         if platform == 'android':
-            # Android yerel dosya seçici sonuçlarını yakalamak için bind işlemi
             activity.bind(on_activity_result=self.handle_activity_result)
             Clock.schedule_once(self.request_android_permissions, 1)
 
@@ -86,7 +86,8 @@ class GasketMatcherMobile(BoxLayout):
 
     def request_android_permissions(self, dt):
         try:
-            permissions = [Permission.CAMERA, Permission.READ_MEDIA_IMAGES]
+            # Hem eski sürümler (API < 33) hem de yeni sürümler (API 33+) için garanti izinler
+            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.READ_MEDIA_IMAGES]
             request_permissions(permissions)
         except Exception as e: 
             print(f"İzin hatası: {e}")
@@ -116,13 +117,12 @@ class GasketMatcherMobile(BoxLayout):
             filechooser.open_file(on_selection=lambda s: self.process_new_query(s[0]) if s else None)
 
     def bulk_import_native(self, instance):
-        """Android 13 uyumlu çoklu görsel seçerek toplu içe aktarma tetikleyicisi"""
         if platform == 'android':
             try:
                 intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
                 intent.addCategory(Intent.CATEGORY_OPENABLE)
                 intent.setType("image/*")
-                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True) # Çoklu seçimi aktif et
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True)
                 PythonActivity.mActivity.startActivityForResult(intent, 1003)
             except Exception as e:
                 self.lbl_status.text = f"Çoklu seçim arayüzü hatası: {e}"
@@ -143,25 +143,24 @@ class GasketMatcherMobile(BoxLayout):
         self.update_status_from_thread(f"Başarılı! {count} kayıt eklendi. Toplam: {len(os.listdir(self.db_folder))}")
 
     def handle_activity_result(self, request_code, result_code, intent):
-        """Android yerel dosya yöneticisinden dönen URI verilerini yakalayan metod"""
-        if result_code != -1: # Android Activity.RESULT_OK = -1
+        if result_code != -1: # Android Activity.RESULT_OK
             return
         
-        if request_code == 1002: # Tekli Görsel Seçimi (Aranan)
+        if request_code == 1002:
             if intent is not None:
                 uri = intent.getData()
                 if uri is not None:
                     self.lbl_status.text = "Görsel yükleniyor..."
                     threading.Thread(target=self.process_android_uri_query, args=(uri,), daemon=True).start()
                     
-        elif request_code == 1003: # Çoklu Görsel Seçimi (DB Aktarım)
+        elif request_code == 1003:
             if intent is not None:
                 uris = []
                 clip_data = intent.getClipData()
-                if clip_data is not None: # Birden fazla görsel seçildiyse
+                if clip_data is not None:
                     for i in range(clip_data.getItemCount()):
                         uris.append(clip_data.getItemAt(i).getUri())
-                else: # Sadece tek bir görsel seçilip çıkıldıysa
+                else:
                     uri = intent.getData()
                     if uri is not None:
                         uris.append(uri)
@@ -171,23 +170,34 @@ class GasketMatcherMobile(BoxLayout):
                     threading.Thread(target=self.process_android_uris_bulk, args=(uris,), daemon=True).start()
 
     def copy_uri_to_local_file(self, uri, dest_path):
-        """Android Saf içerik URI'sini byte akışı ile yerel depolamaya kopyalar"""
+        """
+        Android Saf içerik URI'sini Java byte dizileriyle çökmeden, 
+        güvenli bir şekilde kopyalama yordamı.
+        """
         try:
             context = PythonActivity.mActivity
             content_resolver = context.getContentResolver()
             input_stream = content_resolver.openInputStream(uri)
+            
             FileOutputStream = autoclass('java.io.FileOutputStream')
             out_stream = FileOutputStream(dest_path)
             
-            buffer = ByteArray(4096)
-            while True:
-                bytes_read = input_stream.read(buffer)
-                if bytes_read == -1:
-                    break
-                out_stream.write(buffer, 0, bytes_read)
+            Build = autoclass('android.os.Build$VERSION')
+            
+            # API 29 (Android 10) ve sonrası yerleşik kopyalama desteği
+            if Build.SDK_INT >= 29:
+                FileUtils = autoclass('android.os.FileUtils')
+                FileUtils.copy(input_stream, out_stream)
+            else:
+                # Eski API'ler için güvenli Bitmap Decode kopyalama
+                BitmapFactory = autoclass('android.graphics.BitmapFactory')
+                CompressFormat = autoclass('android.graphics.Bitmap$CompressFormat')
+                bitmap = BitmapFactory.decodeStream(input_stream)
+                bitmap.compress(CompressFormat.JPEG, 100, out_stream)
                 
-            input_stream.close()
+            out_stream.flush()
             out_stream.close()
+            input_stream.close()
             return True
         except Exception as e:
             print(f"Kopyalama Hatası: {e}")
@@ -207,7 +217,7 @@ class GasketMatcherMobile(BoxLayout):
             dest_path = os.path.join(self.db_folder, filename)
             if self.copy_uri_to_local_file(uri, dest_path):
                 count += 1
-        self.update_status_from_thread(f"Başarılı! {count} görsel DB'ye eklendi. Toplam: {len(os.listdir(self.db_folder))}")
+        self.update_status_from_thread(f"Başarılı! {count} görsel eklendi. Toplam: {len(os.listdir(self.db_folder))}")
 
     def show_clear_db_popup(self, instance):
         content = BoxLayout(orientation='vertical', padding=15, spacing=15)
