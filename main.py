@@ -19,17 +19,12 @@ from kivy.utils import platform
 if platform == 'android':
     from android.permissions import request_permissions, Permission
     from android import activity
-    from jnius import autoclass
+    from jnius import autoclass, cast
     
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
     Intent = autoclass('android.content.Intent')
     Uri = autoclass('android.net.Uri')
     MediaStore = autoclass('android.provider.MediaStore')
-    File = autoclass('java.io.File')
-    
-    # Android Güvenlik Duvarı Esnetme Protokolü
-    StrictMode = autoclass('android.os.StrictMode')
-    StrictMode.setThreadPolicy(StrictMode.ThreadPolicy.Builder().permitAll().build())
 else:
     from plyer import filechooser
 
@@ -39,7 +34,7 @@ class GasketMatcherMobile(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
         
-        # --- DEĞİŞKENLER ---
+        # --- VERİTABANI DEĞİŞKENLERİ ---
         self.db_folder = os.path.join(App.get_running_app().user_data_dir, "GasketDB")
         if not os.path.exists(self.db_folder):
             os.makedirs(self.db_folder)
@@ -47,7 +42,7 @@ class GasketMatcherMobile(BoxLayout):
         self.query_image_path = None
         self.match_results = []
         self.current_result_index = 0
-        self.camera_file_path = None
+        self.camera_uri = None 
 
         if platform == 'android':
             activity.bind(on_activity_result=self.handle_activity_result)
@@ -92,60 +87,56 @@ class GasketMatcherMobile(BoxLayout):
 
     def request_android_permissions(self, dt):
         try:
-            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE]
+            permissions = [Permission.CAMERA, Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE, Permission.READ_MEDIA_IMAGES]
             request_permissions(permissions)
         except Exception as e: 
-            print(f"İzin hatası: {e}")
-
-    def robust_imread(self, path, is_gray=False):
-        """Türkçe karakterli dosya yollarında çökme yaşanmasını engelleyen güvenli okuyucu"""
-        try:
-            with open(path, "rb") as f:
-                file_bytes = f.read()
-            nparr = np.frombuffer(file_bytes, np.uint8)
-            flag = cv2.IMREAD_GRAYSCALE if is_gray else cv2.IMREAD_COLOR
-            return cv2.imdecode(nparr, flag)
-        except Exception as e:
-            print(f"Resim okuma hatası bypassed: {e}")
-            return None
-
-    def get_uri_filename(self, uri):
-        if platform == 'android':
-            try:
-                context = PythonActivity.mActivity
-                content_resolver = context.getContentResolver()
-                MediaColumns = autoclass('android.provider.MediaStore$MediaColumns')
-                
-                cursor = content_resolver.query(uri, None, None, None, None)
-                if cursor is not None and cursor.moveToFirst():
-                    name_index = cursor.getColumnIndex(MediaColumns.DISPLAY_NAME)
-                    filename = cursor.getString(name_index)
-                    cursor.close()
-                    return filename
-            except Exception as e:
-                print(f"Orijinal isim hatası bypassed: {e}")
-        return f"gasket_{int(time.time())}.jpg"
+            print(f"İzin isteme hatası: {e}")
 
     def open_camera_native(self, instance):
-        """Dışarıya açık paylaşımlı klasör kullanan kesin çözümlü kamera tetikleyicisi"""
         if platform == 'android':
             try:
+                ContentValues = autoclass('android.content.ContentValues')
+                Media = autoclass('android.provider.MediaStore$Images$Media')
+                String = autoclass('java.lang.String')
+                
                 context = PythonActivity.mActivity
-                # Kameranın erişebileceği dış klasöre kaydet (Çökme engellendi)
-                ext_dir = context.getExternalFilesDir(None).getAbsolutePath()
-                self.camera_file_path = os.path.join(ext_dir, "camera_query.jpg")
+                content_resolver = context.getContentResolver()
                 
-                if os.path.exists(self.camera_file_path):
-                    os.remove(self.camera_file_path)
+                filename = f"gasket_{int(time.time())}.jpg"
+                
+                values = ContentValues()
+                values.put(Media.DISPLAY_NAME, String(filename))
+                values.put(Media.MIME_TYPE, String("image/jpeg"))
+                
+                try:
+                    Build = autoclass('android.os.Build$VERSION')
+                    if Build.SDK_INT >= 29:
+                        values.put(Media.RELATIVE_PATH, String("Pictures/GasketMatcher"))
+                        try:
+                            values.put("is_pending", autoclass('java.lang.Integer')(1))
+                        except:
+                            pass
+                except:
+                    pass
+                
+                try:
+                    self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, values)
+                except Exception as db_err:
+                    print(f"Gelişmiş insert başarısız, yalın deniniyor: {db_err}")
+                    fallback_values = ContentValues()
+                    fallback_values.put(Media.DISPLAY_NAME, String(filename))
+                    fallback_values.put(Media.MIME_TYPE, String("image/jpeg"))
+                    self.camera_uri = content_resolver.insert(Media.EXTERNAL_CONTENT_URI, fallback_values)
+                
+                if self.camera_uri is None:
+                    self.lbl_status.text = "Hata: Media Deposu oluşturulamadı."
+                    return
                     
-                image_file = File(self.camera_file_path)
-                camera_uri = Uri.fromFile(image_file)
-                
                 intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                intent.putExtra(MediaStore.EXTRA_OUTPUT, camera_uri)
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, self.camera_uri)
                 PythonActivity.mActivity.startActivityForResult(intent, 1001)
             except Exception as e:
-                self.lbl_status.text = f"Kamera Başlatılamadı:\n{str(e)}"
+                self.lbl_status.text = f"Kamera Başlatılamadı: {str(e)}"
         else:
             self.lbl_status.text = "Kamera özelliği sadece Android cihazlarda aktiftir."
 
@@ -176,67 +167,88 @@ class GasketMatcherMobile(BoxLayout):
 
     def handle_desktop_bulk_import(self, selection):
         if not selection: return
+        threading.Thread(target=self.run_desktop_bulk_import, args=(selection,), daemon=True).start()
+
+    def run_desktop_bulk_import(self, paths):
         count = 0
-        for path in selection:
+        total = len(paths)
+        for idx, path in enumerate(paths):
             if path.lower().endswith(('.png', '.jpg', '.jpeg')):
                 filename = os.path.basename(path)
                 shutil.copyfile(path, os.path.join(self.db_folder, filename))
                 count += 1
-        self.lbl_status.text = f"Başarılı! {count} kayıt eklendi. Toplam: {len(os.listdir(self.db_folder))}"
+                progress = (count / total) * 100
+                self.update_status_from_thread(f"Masaüstü Aktarımı: {count}/{total} (%{progress:.1f})")
+        self.update_status_from_thread(f"Başarılı! {count} kayıt eklendi. Toplam: {len(os.listdir(self.db_folder))}")
 
     def handle_activity_result(self, request_code, result_code, intent):
         if result_code != -1: 
             return
         
-        if request_code == 1001: # Kamera dönüşü
-            if self.camera_file_path and os.path.exists(self.camera_file_path):
-                self.lbl_status.text = "Kamera görüntüsü alınıyor..."
-                Clock.schedule_once(lambda dt: self.process_new_query(self.camera_file_path), 0.2)
-            else:
-                self.lbl_status.text = "Hata: Kamera resmi hafızaya yazamadı."
+        if request_code == 1001: 
+            if self.camera_uri is not None:
+                try:
+                    Build = autoclass('android.os.Build$VERSION')
+                    if Build.SDK_INT >= 29:
+                        ContentValues = autoclass('android.content.ContentValues')
+                        Integer = autoclass('java.lang.Integer')
+                        values = ContentValues()
+                        values.put("is_pending", Integer(0))
+                        PythonActivity.mActivity.getContentResolver().update(self.camera_uri, values, None, None)
+                except:
+                    pass
+                
+                self.lbl_status.text = "Fotoğraf alındı, işlemler başlatılıyor..."
+                threading.Thread(target=self.process_android_uri_query, args=(self.camera_uri,), daemon=True).start()
 
-        elif request_code == 1002: # Galeri tekli dönüşü
-            if intent is not None and intent.getData() is not None:
-                self.lbl_status.text = "Görsel yükleniyor..."
-                threading.Thread(target=self.process_android_uri_query, args=(intent.getData(),), daemon=True).start()
-                    
-        elif request_code == 1003: # Çoklu DB aktarım dönüşü
+        elif request_code == 1002: 
             if intent is not None:
-                uris_with_names = []
+                uri = intent.getData()
+                if uri is not None:
+                    self.lbl_status.text = "Galeri görseli yüklendi, işlemler başlatılıyor..."
+                    threading.Thread(target=self.process_android_uri_query, args=(uri,), daemon=True).start()
+                    
+        elif request_code == 1003: 
+            if intent is not None:
+                uris = []
                 clip_data = intent.getClipData()
                 if clip_data is not None:
                     for i in range(clip_data.getItemCount()):
-                        uri = clip_data.getItemAt(i).getUri()
-                        uris_with_names.append((uri, self.get_uri_filename(uri)))
+                        uris.append(clip_data.getItemAt(i).getUri())
                 else:
                     uri = intent.getData()
                     if uri is not None:
-                        uris_with_names.append((uri, self.get_uri_filename(uri)))
+                        uris.append(uri)
                 
-                if uris_with_names:
-                    threading.Thread(target=self.process_android_uris_bulk, args=(uris_with_names,), daemon=True).start()
+                if uris:
+                    self.lbl_status.text = f"{len(uris)} görsel için aktarım sıraya alındı..."
+                    threading.Thread(target=self.process_android_uris_bulk, args=(uris,), daemon=True).start()
 
     def copy_uri_to_local_file(self, uri, dest_path):
         try:
             context = PythonActivity.mActivity
             content_resolver = context.getContentResolver()
             input_stream = content_resolver.openInputStream(uri)
+            
             FileOutputStream = autoclass('java.io.FileOutputStream')
             out_stream = FileOutputStream(dest_path)
             
-            buffer = bytearray(4096)
-            while True:
-                bytes_read = input_stream.read(buffer)
-                if bytes_read == -1:
-                    break
-                out_stream.write(buffer, 0, bytes_read)
+            Build = autoclass('android.os.Build$VERSION')
+            if Build.SDK_INT >= 29:
+                FileUtils = autoclass('android.os.FileUtils')
+                FileUtils.copy(input_stream, out_stream)
+            else:
+                BitmapFactory = autoclass('android.graphics.BitmapFactory')
+                CompressFormat = autoclass('android.graphics.Bitmap$CompressFormat')
+                bitmap = BitmapFactory.decodeStream(input_stream)
+                bitmap.compress(CompressFormat.JPEG, 100, out_stream)
                 
             out_stream.flush()
             out_stream.close()
             input_stream.close()
             return True
         except Exception as e:
-            print(f"Kopyalama Hatası: {e}")
+            print(f"Dosya Kopyalama Hatası: {e}")
             return False
 
     def process_android_uri_query(self, uri):
@@ -244,25 +256,40 @@ class GasketMatcherMobile(BoxLayout):
         if self.copy_uri_to_local_file(uri, local_path):
             Clock.schedule_once(lambda dt: self.process_new_query(local_path), 0)
         else:
-            self.update_status_from_thread("Hata: Görsel kopyalanamadı.")
+            self.update_status_from_thread("Hata: Görsel sisteme kopyalanamadı.")
 
-    def process_android_uris_bulk(self, uris_with_names):
-        """Aktarım yüzdesini anlık gösteren güvenli döngü"""
-        try:
-            total = len(uris_with_names)
-            count = 0
-            for idx, (uri, orig_name) in enumerate(uris_with_names):
-                dest_path = os.path.join(self.db_folder, orig_name)
-                if self.copy_uri_to_local_file(uri, dest_path):
-                    count += 1
-                
-                progress = ((idx + 1) / total) * 100
-                self.update_status_from_thread(f"Dosyalar aktarılıyor: {idx+1}/{total} (%{progress:.1f})\nEklenen: {orig_name}")
-                time.sleep(0.01)
-                
-            self.update_status_from_thread(f"Başarılı! {count} adet orijinal isimli conta eklendi.\nToplam DB: {len(os.listdir(self.db_folder))}")
-        except Exception as e:
-            self.update_status_from_thread(f"Aktarımda kritik hata oluştu: {str(e)}")
+    def process_android_uris_bulk(self, uris):
+        """DB'ye toplu ekleme esnasında ANLIK YÜZDE takibi yapar"""
+        count = 0
+        total_uris = len(uris)
+        
+        for i, uri in enumerate(uris):
+            # Her bir görsel işlenirken yüzdeyi anlık tetikle
+            progress = ((i + 1) / total_uris) * 100
+            self.update_status_from_thread(f"Görseller DB'ye Aktarılıyor: {i + 1}/{total_uris} (%{progress:.1f})")
+            
+            filename = f"gasket_{int(time.time())}_{i}.jpg"
+            temp_path = os.path.join(App.get_running_app().user_data_dir, f"temp_{filename}")
+            dest_path = os.path.join(self.db_folder, filename)
+            
+            if self.copy_uri_to_local_file(uri, temp_path):
+                try:
+                    img = cv2.imread(temp_path)
+                    if img is not None:
+                        max_dim = 600
+                        h, w = img.shape[:2]
+                        if max(h, w) > max_dim:
+                            scale = max_dim / max(h, w)
+                            img = cv2.resize(img, (int(w * scale), int(h * scale)))
+                        cv2.imwrite(dest_path, img)
+                        count += 1
+                except Exception as e:
+                    print(f"Boyutlandırma hatası: {e}")
+                finally:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                        
+        self.update_status_from_thread(f"Başarılı! {count} görsel eklendi. Toplam: {len(os.listdir(self.db_folder))}")
 
     def show_clear_db_popup(self, instance):
         content = BoxLayout(orientation='vertical', padding=15, spacing=15)
@@ -286,163 +313,134 @@ class GasketMatcherMobile(BoxLayout):
 
     def process_new_query(self, path):
         self.query_image_path = path
-        self.img_query.source = path
-        self.img_query.reload()
-        self.lbl_status.text = "Geometri analiz ediliyor... Hazırlanıyor..."
-        threading.Thread(target=self.find_best_match, daemon=True).start()
+        self.lbl_status.text = "[Adım 1/4] - Görsel optimizasyonu başlatılıyor..."
+        threading.Thread(target=self.safe_start_processing, daemon=True).start()
 
-    def load_image_and_optimize(self, img_path):
-        img = self.robust_imread(img_path, is_gray=False)
+    def safe_start_processing(self):
+        try:
+            self.update_status_from_thread("[Adım 2/4] - Çözünürlük ve RAM yükü dengeleniyor...")
+            img = self.load_image_with_orientation(self.query_image_path)
+            if img is not None:
+                max_dim = 600
+                h, w = img.shape[:2]
+                if max(h, w) > max_dim:
+                    scale = max_dim / max(h, w)
+                    img_resized = cv2.resize(img, (int(w * scale), int(h * scale)))
+                else:
+                    img_resized = img
+                
+                display_path = os.path.join(App.get_running_app().user_data_dir, "display_query.jpg")
+                cv2.imwrite(display_path, img_resized)
+                Clock.schedule_once(lambda dt: self.update_query_ui(display_path), 0)
+        except Exception as e:
+            print("Arayüz resmi hazırlanamadı:", e)
+            
+        self.find_best_match()
+
+    def update_query_ui(self, display_path):
+        self.img_query.source = display_path
+        self.img_query.reload()
+
+    def load_image_with_orientation(self, img_path):
+        img = cv2.imread(img_path)
         if img is None: 
             return None
-        
+            
         if platform == 'android':
             try:
                 ExifInterface = autoclass('android.media.ExifInterface')
                 exif = ExifInterface(img_path)
                 orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                
                 if orientation == ExifInterface.ORIENTATION_ROTATE_90:
                     img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
                 elif orientation == ExifInterface.ORIENTATION_ROTATE_180:
                     img = cv2.rotate(img, cv2.ROTATE_180)
                 elif orientation == ExifInterface.ORIENTATION_ROTATE_270:
                     img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            except:
-                pass
+            except Exception as e:
+                print(f"EXIF Oryantasyon hatası es geçildi: {e}")
                 
-        img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Hız Optimizasyonu (Maksimum 500 piksel)
-        max_pixel = 500
-        h, w = img_gray.shape[:2]
-        if max(h, w) > max_pixel:
-            scale = max_pixel / max(h, w)
-            img_gray = cv2.resize(img_gray, (int(w * scale), int(h * scale)))
-            
-        return img_gray
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return gray
 
-    def extract_gasket_contour(self, img_gray):
-        blurred = cv2.GaussianBlur(img_gray, (5, 5), 0)
-        _, thresh1 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        _, thresh2 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
-        best_contour = None
-        max_area = 0
-        img_area = img_gray.shape[0] * img_gray.shape[1]
-        
-        for thresh in [thresh1, thresh2]:
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours:
-                area = cv2.contourArea(c)
-                if 0.03 * img_area < area < 0.96 * img_area:
-                    if area > max_area:
-                        max_area = area
-                        best_contour = c
-                        
-        if best_contour is None:
-            edged = cv2.Canny(blurred, 30, 120)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            closed = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, kernel)
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours:
-                area = cv2.contourArea(c)
-                if 0.03 * img_area < area < 0.96 * img_area:
-                    if area > max_area:
-                        max_area = area
-                        best_contour = c
-        return best_contour
-
-    # --- ASLA ÇÖKMEYEN CANLI YÜZDE GÖSTERGELİ ANALİZ MOTORU ---
     def find_best_match(self):
-        try:
-            db_files = [f for f in os.listdir(self.db_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-            if not db_files:
-                self.update_status_from_thread("Hata: Veritabanında karşılaştırılacak conta yok.")
-                return
+        self.update_status_from_thread("[Adım 3/4] - Veritabanı arşivi taranıyor...")
+        db_files = [f for f in os.listdir(self.db_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        if not db_files:
+            self.update_status_from_thread("Hata: Veritabanında karşılaştırılacak conta yok.")
+            return
 
-            query_img = self.load_image_and_optimize(self.query_image_path)
-            if query_img is None:
-                self.update_status_from_thread("Hata: Aranan resim çözümlenemedi.")
-                return
+        # "Geometri analiz ediliyor" deyip donuk kalmaması için bu aşamaya özel yazı basıyoruz
+        self.update_status_from_thread("[Adım 4/4] - Aranan parçanın geometrik haritası çıkarılıyor...")
+        query_img = self.load_image_with_orientation(self.query_image_path)
+        if query_img is None:
+            self.update_status_from_thread("Hata: Aranan resim yüklenemedi.")
+            return
 
-            c_query = self.extract_gasket_contour(query_img)
-            if c_query is None:
-                self.update_status_from_thread("Hata: Fotoğrafta net bir conta dış hattı yakalanamadı.")
-                return
+        orb = cv2.ORB_create(nfeatures=1000)
+        kp_query, des_query = orb.detectAndCompute(query_img, None)
+        
+        if des_query is None:
+            self.update_status_from_thread("Hata: Fotoğrafta belirgin conta detayı bulunamadı.")
+            return
 
-            results = []
-            total_files = len(db_files)
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        results = []
+        total_files = len(db_files)
+        
+        # --- ANLIK VERİTABANI DOSYA TARAMA VE YÜZDE DÖNGÜSÜ ---
+        for idx, f in enumerate(db_files):
+            progress = ((idx + 1) / total_files) * 100
+            # Her bir tekil dosyada başlık anında güncellenir, sayaç akar. Donma hissi sıfırlanır.
+            self.update_status_from_thread(f"Kıyaslanıyor: {idx + 1}/{total_files} Parça (%{progress:.1f})\nDosya: {f}")
             
-            for idx, f in enumerate(db_files):
-                # Her adımda canlı yüzdeyi ekrana bas ve donmayı engelle
-                progress = ((idx + 1) / total_files) * 100
-                self.update_status_from_thread(f"Geometri analiz ediliyor: {idx+1}/{total_files} (%{progress:.1f})\nTaranan: {f}")
-                time.sleep(0.003) # Main loop'un arayüzü çizmesine izin ver
+            db_path = os.path.join(self.db_folder, f)
+            db_img = cv2.imread(db_path, cv2.IMREAD_GRAYSCALE)
+            if db_img is None: 
+                continue
                 
-                db_path = os.path.join(self.db_folder, f)
-                db_img = self.robust_imread(db_path, is_gray=True)
-                if db_img is None: 
-                    continue
-                    
-                # DB görsel boyut optimizasyonu
-                max_pixel = 500
-                h_d, w_d = db_img.shape[:2]
-                if max(h_d, w_d) > max_pixel:
-                    scale_d = max_pixel / max(h_d, w_d)
-                    db_img = cv2.resize(db_img, (int(w_d * scale_d), int(h_d * scale_d)))
-                    
-                try:
-                    _, db_thresh = cv2.threshold(db_img, 15, 255, cv2.THRESH_BINARY)
-                    db_contours, _ = cv2.findContours(db_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    
-                    if not db_contours: 
-                        continue
-                    c_db = max(db_contours, key=cv2.contourArea)
+            kp_db, des_db = orb.detectAndCompute(db_img, None)
+            if des_db is None: 
+                continue
 
-                    # Geometrik doğruluk kontrolü (Kritik çökme koruması)
-                    if c_db is None or len(c_db) < 3 or len(c_query) < 3:
-                        continue
+            matches = bf.match(des_query, des_db)
+            matches = sorted(matches, key=lambda x: x.distance)
 
-                    score = cv2.matchShapes(c_query, c_db, cv2.CONTOUR_MATCH_I1, 0)
-                    results.append((db_path, score))
-                except Exception as loop_error:
-                    # Tek bir hatalı görselde çöküp kapanmayı engelle, devam et
-                    print(f"{f} görseli analiz edilirken hata geçildi: {loop_error}")
-                    continue
-                            
-            results.sort(key=lambda x: x[1])
-            filtered_results = [r for r in results if r[1] < 2.0]
+            good_matches = [m for m in matches if m.distance < 48]
+            score = len(good_matches)
             
-            if filtered_results:
-                self.match_results = filtered_results
-                self.current_result_index = 0
-                Clock.schedule_once(lambda dt: self.update_result_display(), 0)
-            else:
-                self.match_results = []
-                Clock.schedule_once(lambda dt: self.set_no_match_ui(), 0)
-                
-        except Exception as global_error:
-            # Thread içi ölümcül hata yakalayıcı (Uygulamanın kapanmasını önler)
-            self.update_status_from_thread(f"Analiz durduruldu: {str(global_error)}")
+            results.append((db_path, score))
+                        
+        results.sort(key=lambda x: x[1], reverse=True)
+        filtered_results = [r for r in results if r[1] >= 8]
+        
+        if filtered_results:
+            self.match_results = filtered_results
+            self.current_result_index = 0
+            Clock.schedule_once(lambda dt: self.update_result_display(), 0)
+        else:
+            self.match_results = []
+            Clock.schedule_once(lambda dt: self.set_no_match_ui(), 0)
 
     def set_no_match_ui(self):
         self.img_match.source = ''
         self.img_match.reload()
-        self.lbl_status.text = "Sistemde benzer geometriye sahip conta bulunamadı."
+        self.lbl_status.text = "Sistemde benzer geometride conta bulunamadı."
         self.lbl_index.text = "Sonuç: 0 / 0"
 
     def update_result_display(self):
         if not self.match_results:
             return
             
-        file_path, score = self.match_results[self.current_result_index]
-        confidence = max(0.0, min(100.0, (1.0 - score) * 100))
+        file_path, match_count = self.match_results[self.current_result_index]
+        confidence = min(100.0, (match_count / 25.0) * 100)
         
         self.img_match.source = file_path
         self.img_match.reload()
         
         code_name = os.path.basename(file_path)
-        self.lbl_status.text = f"Sonuç {self.current_result_index + 1}: {code_name}\nHata Puanı: {score:.3f} (Uyum: %{confidence:.1f})"
+        self.lbl_status.text = f"Sonuç {self.current_result_index + 1}: {code_name}\nEşleşen Nokta: {match_count} (Güven Skoru: %{confidence:.1f})"
         self.lbl_index.text = f"Sonuç: {self.current_result_index + 1} / {len(self.match_results)}"
 
     def show_prev_result(self, instance):
