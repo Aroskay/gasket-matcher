@@ -16,6 +16,7 @@ from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.utils import platform
 
+# Android dışındaki platformlarda test için güvenli import
 if platform == 'android':
     from android.permissions import request_permissions, Permission
     from android import activity
@@ -27,15 +28,20 @@ if platform == 'android':
     MediaStore = autoclass('android.provider.MediaStore')
     File = autoclass('java.io.File')
 else:
-    from plyer import filechooser
+    try:
+        from plyer import filechooser
+    except ImportError:
+        filechooser = None
 
 Window.clearcolor = (0.1, 0.1, 0.1, 1)
 
 class GasketMatcherMobile(BoxLayout):
-    def __init__(self, **kwargs):
+    def __init__(self, app_instance, **kwargs):
         super().__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
         
-        self.db_folder = os.path.join(App.get_running_app().user_data_dir, "GasketDB")
+        # Çökmeyi önlemek için App nesnesini doğrudan buraya bağladık
+        self.app = app_instance
+        self.db_folder = os.path.join(self.app.user_data_dir, "GasketDB")
         if not os.path.exists(self.db_folder):
             os.makedirs(self.db_folder)
             
@@ -93,7 +99,6 @@ class GasketMatcherMobile(BoxLayout):
             print(f"İzin hatası: {e}")
 
     def robust_imread(self, path, is_gray=False):
-        """Türkçe karakterlerden dolayı Android'de yaşanan OpenCV çökmesini önler"""
         try:
             with open(path, "rb") as f:
                 file_bytes = f.read()
@@ -104,7 +109,6 @@ class GasketMatcherMobile(BoxLayout):
             return None
 
     def get_uri_filename(self, uri):
-        """Orijinal dosya ismini galeriden çeker ve isim değişikliğini önler"""
         if platform == 'android':
             try:
                 context = PythonActivity.mActivity
@@ -160,7 +164,10 @@ class GasketMatcherMobile(BoxLayout):
             except Exception as e:
                 self.lbl_status.text = f"Galeri açma hatası: {e}"
         else:
-            filechooser.open_file(on_selection=lambda s: self.process_new_query(s[0]) if s else None)
+            if filechooser:
+                filechooser.open_file(on_selection=lambda s: self.process_new_query(s[0]) if s else None)
+            else:
+                self.lbl_status.text = "Masaüstünde test etmek için 'plyer' kütüphanesini yükleyin."
 
     def bulk_import_native(self, instance):
         if platform == 'android':
@@ -173,7 +180,10 @@ class GasketMatcherMobile(BoxLayout):
             except Exception as e:
                 self.lbl_status.text = f"Çoklu seçim hatası: {e}"
         else:
-            filechooser.open_file(multiple=True, on_selection=self.handle_desktop_bulk_import)
+            if filechooser:
+                filechooser.open_file(multiple=True, on_selection=self.handle_desktop_bulk_import)
+            else:
+                self.lbl_status.text = "Masaüstünde test etmek için 'plyer' kütüphanesini yükleyin."
 
     def handle_desktop_bulk_import(self, selection):
         if not selection: return
@@ -233,7 +243,7 @@ class GasketMatcherMobile(BoxLayout):
             return False
 
     def process_android_uri_query(self, uri):
-        local_path = os.path.join(App.get_running_app().user_data_dir, "temp_query.jpg")
+        local_path = os.path.join(self.app.user_data_dir, "temp_query.jpg")
         if self.copy_uri_to_local_file(uri, local_path):
             Clock.schedule_once(lambda dt: self.process_new_query(local_path), 0)
         else:
@@ -243,13 +253,11 @@ class GasketMatcherMobile(BoxLayout):
         try:
             total = len(uris_with_names)
             count = 0
-            temp_path = os.path.join(App.get_running_app().user_data_dir, "temp_import.jpg")
+            temp_path = os.path.join(self.app.user_data_dir, "temp_import.jpg")
             
             last_prog = -1
             for idx, (uri, orig_name) in enumerate(uris_with_names):
                 if self.copy_uri_to_local_file(uri, temp_path):
-                    # PC'deki orijinal kaliteyi korumak ama RAM çökmesini önlemek için
-                    # görseli 1000px'e indirgiyoruz. (Eşleşme doğruluğu için çok yeterli)
                     img = self.robust_imread(temp_path)
                     if img is not None:
                         max_dim = 1000
@@ -295,7 +303,6 @@ class GasketMatcherMobile(BoxLayout):
         threading.Thread(target=self.find_best_match_worker, daemon=True).start()
 
     def get_orientation_fixed_image(self, img_path):
-        """Kameradan gelen yan/ters dönmüş resimleri düzeltip Grayscale'e çevirir (PC uyumlu)"""
         img = self.robust_imread(img_path, is_gray=False)
         if img is None: return None
         if platform == 'android':
@@ -309,9 +316,7 @@ class GasketMatcherMobile(BoxLayout):
             except: pass
         return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # =====================================================================
-    # PC KODUNDAN BİREBİR ALINMIŞ MÜKEMMEL KENAR & MASKE MOTORU
-    # =====================================================================
+    # --- PC MASKE MOTORU ---
     def preprocess_to_edges(self, img_gray):
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(img_gray)
@@ -333,7 +338,6 @@ class GasketMatcherMobile(BoxLayout):
         
         if w_box < 15 or h_box < 15: return None
 
-        # Sadece contayı arka plandan ayır (Masayı görmezden gelir)
         cropped_edges = edges_connected[y:y+h_box, x:x+w_box]
 
         target_size = 400
@@ -348,16 +352,13 @@ class GasketMatcherMobile(BoxLayout):
         pad_left = (target_size - new_w) // 2
         canvas[pad_top:pad_top+new_h, pad_left:pad_left+new_w] = resized_edges
 
-        # Üst üste bindiğinde affedici olması için hatları kalınlaştır
         kernel_thick = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         canvas_thick = cv2.dilate(canvas, kernel_thick, iterations=1)
 
         _, final_mask = cv2.threshold(canvas_thick, 127, 255, cv2.THRESH_BINARY)
         return final_mask
 
-    # =====================================================================
-    # 360 DERECE (144 İHTİMAL) VARYASYON ÜRETİCİSİ
-    # =====================================================================
+    # --- 144 VARYASYON ÜRETİCİ ---
     def generate_query_variations(self, query_mask):
         variations = []
         h, w = query_mask.shape
@@ -373,9 +374,7 @@ class GasketMatcherMobile(BoxLayout):
             
         return variations
 
-    # =====================================================================
-    # HIZLI IoU (Intersection over Union) ÇAKIŞTIRMA HESAPLAYICISI
-    # =====================================================================
+    # --- FAST IoU ÇAKIŞTIRMA ---
     def calculate_similarity_fast(self, query_variations, db_mask):
         max_iou = 0
         db_sum = np.count_nonzero(db_mask)
@@ -392,7 +391,6 @@ class GasketMatcherMobile(BoxLayout):
                 iou = i_sum / u_sum
                 if iou > max_iou:
                     max_iou = iou
-                # %90 üzeri eşleşme bulunursa direkt kır ve devam et (Hız)
                 if max_iou > 0.90:
                     break
         return max_iou
@@ -410,8 +408,7 @@ class GasketMatcherMobile(BoxLayout):
                 self.update_status_from_thread("Hata: Resim okunamadı.")
                 return
 
-            # OOM çökmelerini engellemek için Arayüze 500px minyatür kopyasını gönderiyoruz
-            display_path = os.path.join(App.get_running_app().user_data_dir, "display_query.jpg")
+            display_path = os.path.join(self.app.user_data_dir, "display_query.jpg")
             max_dim = 500
             h, w = img_gray.shape[:2]
             if max(h, w) > max_dim:
@@ -422,7 +419,6 @@ class GasketMatcherMobile(BoxLayout):
             cv2.imwrite(display_path, img_display)
             Clock.schedule_once(lambda dt: self.update_query_ui(display_path), 0)
 
-            # Maske çıkarma (PC'deki gibi pürüzsüz)
             query_mask = self.preprocess_to_edges(img_gray)
             if query_mask is None:
                 self.update_status_from_thread("Hata: Aranan fotoğrafta net bir conta şekli bulunamadı.")
@@ -437,8 +433,6 @@ class GasketMatcherMobile(BoxLayout):
 
             self.update_status_from_thread("[Adım 3/3] Veritabanı Maske Eşleştirmesi Başlıyor...")
             for idx, f in enumerate(db_files):
-                
-                # Ekranda donmayı önlemek ve Kivy arayüzünü ferahlatmak için anlık yüzdeler
                 progress = int(((idx + 1) / total_files) * 100)
                 if progress % 5 == 0 and progress != last_progress:
                     self.update_status_from_thread(f"Taranıyor: %{progress} ({idx+1}/{total_files})")
@@ -452,14 +446,10 @@ class GasketMatcherMobile(BoxLayout):
                 db_mask = self.preprocess_to_edges(db_img)
                 if db_mask is None: continue
 
-                # Varyasyonlarla veritabanı contasını kıyaslıyoruz
                 score = self.calculate_similarity_fast(query_variations, db_mask)
                 results.append((db_path, score))
 
-            # Sonuçları en yüksek skora göre sırala
             results.sort(key=lambda x: x[1], reverse=True)
-            
-            # PC'deki orijinal barajı (0.12) kullanıyoruz
             filtered_results = [r for r in results if r[1] > 0.12]
 
             if filtered_results:
@@ -486,8 +476,6 @@ class GasketMatcherMobile(BoxLayout):
     def update_result_display(self):
         if not self.match_results: return
         file_path, score = self.match_results[self.current_result_index]
-        
-        # PC'deki çarpan algoritması (x 150)
         similarity_percentage = min(100.0, score * 150)
         
         self.img_match.source = file_path
@@ -514,7 +502,8 @@ class GasketMatcherMobile(BoxLayout):
 
 class GasketApp(App):
     def build(self): 
-        return GasketMatcherMobile()
+        # App nesnesini Widget içine parametre olarak gönderiyoruz
+        return GasketMatcherMobile(app_instance=self)
 
 if __name__ == "__main__": 
     GasketApp().run()
